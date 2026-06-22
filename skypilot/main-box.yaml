@@ -20,34 +20,34 @@ resources:
   memory: 16
 
 # No GPU needed on the orchestrator box — agents run on separate sandboxes.
-image_id: docker:ubuntu:22.04
+# No custom image — use the SkyPilot default (has Python/miniconda3, git, sudo).
 
 # Copy private config from the launching machine.
 # These files are in private/ (gitignored) and never committed.
+# Paths use ~ which resolves to /home/sky (the default pod user).
 file_mounts:
-  /root/.pi/agent/models.json: private/models.json
-  /root/.pi/agent/agents/work.md: private/agents/work.md
+  ~/.pi/agent/models.json: private/models.json
+  ~/.pi/agent/agents/work.md: private/agents/work.md
 
 # Env vars passed through from the launching machine via --env.
 # GLM_API_KEY is resolved at runtime by pi's !printf command in models.json.
 envs:
   GLM_BASE_URL: $GLM_BASE_URL
+  SKY_API_ENDPOINT: $SKY_API_ENDPOINT
+  SKY_API_TOKEN: $SKY_API_TOKEN
 
 setup: |
   set -euo pipefail
 
-  # --- Node.js (for openclaw + pi) ---
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  apt-get install -y nodejs git
-
-  # --- Python (for sky CLI) ---
-  apt-get install -y python3 python3-pip
-  ln -sf /usr/bin/python3 /usr/bin/python
+  # --- Node.js 22 (for openclaw + pi) ---
+  # Default image has no Node; install via NodeSource.
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  sudo apt-get install -y nodejs
 
   # --- Install pi coding agent ---
-  npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+  sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
-  # --- Install sky CLI ---
+  # --- Install sky CLI into the existing miniconda3 Python ---
   pip3 install --upgrade pip
   pip3 install "skypilot[kubernetes]"
 
@@ -58,15 +58,14 @@ setup: |
   }
 
   # --- Clone this repo (for YAMLs + skill code) ---
-  git clone https://github.com/rohansonecha/orchestra.git /root/orchestra
+  git clone https://github.com/rohansonecha/orchestra.git ~/orchestra
 
   # --- Install OpenClaw ---
-  npm install -g openclaw@latest
+  sudo npm install -g openclaw@latest
 
   # --- Configure OpenClaw ---
   # openclaw onboard will be run manually on first boot (interactive),
   # OR configured via openclaw config files in a later step.
-  # For now, the gateway is started manually after SSH-ing in.
 
 run: |
   # Keep the box alive. OpenClaw gateway is started as a systemd service

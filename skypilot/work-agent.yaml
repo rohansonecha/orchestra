@@ -17,11 +17,9 @@ resources:
   # No GPU — coding agents don't need GPU; GLM runs on a separate vLLM cluster.
   # Add `accelerators: L4:1` etc. here if a task needs local GPU.
 
-image_id: docker:ubuntu:22.04
-
 file_mounts:
-  /root/.pi/agent/models.json: private/models.json
-  /root/.pi/agent/agents/work.md: private/agents/work.md
+  ~/.pi/agent/models.json: private/models.json
+  ~/.pi/agent/agents/work.md: private/agents/work.md
 
 envs:
   GLM_API_KEY: $GLM_API_KEY
@@ -29,12 +27,12 @@ envs:
 setup: |
   set -euo pipefail
 
-  # --- Node.js (for pi) ---
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  apt-get install -y nodejs git
+  # --- Node.js 22 (for pi) ---
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  sudo apt-get install -y nodejs
 
   # --- Install pi coding agent ---
-  npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+  sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
   # --- Git config (for agent commits) ---
   git config --global user.name "Orchestra Agent"
@@ -42,12 +40,9 @@ setup: |
   git config --global init.defaultBranch main
 
   # --- Workspace dir ---
-  mkdir -p /root/workspace
-  cd /root/workspace
+  mkdir -p ~/workspace
 
 run: |
-  # Start pi in RPC mode (JSONL over stdin/stdout) for the skill to drive.
-  # The skill connects via `sky ssh` and pipes JSONL commands.
   echo "Work agent ready. Drive via:"
-  echo "  sky ssh <cluster> 'pi --mode rpc --provider glm --model zai-org/GLM-5.2-FP8'"
+  echo "  sky exec <cluster> 'pi -p \"hello\" --provider glm --model zai-org/GLM-5.2-FP8'"
   sleep infinity
