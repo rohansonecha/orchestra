@@ -209,12 +209,12 @@ fn attach_to_session(name: &str, worktree_path: &str, status_message: &mut Strin
 }
 
 fn ui(f: &mut ratatui::Frame, app: &App) {
-    // Layout: session list (flexible) + dispatch input (3 rows) + status bar (1 row)
-    // Bypass Layout solver — manually calculate areas for exact control.
+    // Layout: session list (flexible) + dispatch input (3 rows)
+    // Status shown in the input block's footer, not as a separate row.
     let area = f.area();
-    let list_area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(4));
-    let input_area = Rect::new(area.x, area.y + area.height.saturating_sub(4), area.width, 3);
-    let status_area = Rect::new(area.x, area.y + area.height.saturating_sub(1), area.width, 1);
+    let list_h = area.height.saturating_sub(3);
+    let list_area = Rect::new(area.x, area.y, area.width, list_h);
+    let input_area = Rect::new(area.x, area.y + list_h, area.width, 3);
 
     // Session list
     let items: Vec<ListItem> = app
@@ -251,25 +251,25 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
 
     f.render_stateful_widget(list, list_area, &mut app.list_state.clone());
 
-    // Dispatch input
+    // Dispatch input with status in the footer
     let input_title = if app.input.is_empty() {
         " Type a prompt + Enter to dispatch new session "
     } else {
         " Press Enter to dispatch "
     };
-    let input = Paragraph::new(app.input.as_str())
-        .block(Block::default().borders(Borders::ALL).title(input_title));
-    f.render_widget(input, input_area);
-
-    // Status bar
-    let debug = format!("area: {}x{} list:{} input:{} status:{}", area.width, area.height, list_area.height, input_area.height, status_area.height);
     let status = if !app.status_message.is_empty() {
-        format!("{} | {}", app.status_message, debug)
+        app.status_message.as_str()
     } else if app.sessions.is_empty() {
-        debug
+        "No sessions yet"
     } else {
-        debug
+        ""
     };
-    let status_bar = Paragraph::new(status).style(Style::default().fg(Color::Yellow));
-    f.render_widget(status_bar, status_area);
+    let input = Paragraph::new(app.input.as_str())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(input_title)
+                .footer_bottom(ratatui::text::Line::from(status).style(Style::default().fg(Color::Yellow))),
+        );
+    f.render_widget(input, input_area);
 }
