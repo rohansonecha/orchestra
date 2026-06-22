@@ -80,6 +80,10 @@ pub fn spawn_pi(
     // Spawn pi in print mode with the initial prompt, in the worktree.
     // The session is saved by name, so subsequent `pi -p --name <name>` calls
     // continue the conversation.
+    //
+    // ALL stdio redirected to null so pi's output never leaks into the TUI.
+    // The session runs silently in the background; attach with Right arrow
+    // to see it interactively.
     Command::new("pi")
         .arg("-p")
         .arg(initial_prompt)
@@ -90,6 +94,7 @@ pub fn spawn_pi(
         .arg("--model")
         .arg("zai-org/GLM-5.2-FP8")
         .current_dir(worktree_path)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

@@ -114,8 +114,8 @@ setup: |
   cd ~/orchestra/tui && cargo build --release || {
     echo "WARNING: TUI build failed; run 'cargo build --release' in ~/orchestra/tui manually"
   }
-  # Symlink so 'orchestra-tui' is on PATH
-  sudo ln -sf ~/orchestra/tui/target/release/orchestra-tui /usr/local/bin/orchestra-tui
+  # Symlink so 'orchestra' is on PATH
+  sudo ln -sf ~/orchestra/tui/target/release/orchestra /usr/local/bin/orchestra
 
   # --- Start OpenClaw gateway ---
   # Config is already mounted at ~/.openclaw/openclaw.json (via file_mounts),
@@ -131,5 +131,5 @@ run: |
   # Keep the box alive. The OpenClaw gateway runs as a systemd service.
   echo "Main box ready. OpenClaw gateway should be running."
   echo "Check status: openclaw daemon status"
-  echo "Launch TUI: orchestra-tui"
+  echo "Launch TUI: orchestra"
   sleep infinity
