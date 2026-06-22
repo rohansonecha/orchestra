@@ -121,7 +121,22 @@ setup: |
   # Config is already mounted at ~/.openclaw/openclaw.json (via file_mounts),
   # so no interactive onboard is needed. The apiKey field uses
   # "!printf %s $GLM_API_KEY" which reads the env var set by secrets-manager.
-  mkdir -p ~/.openclaw/workspace
+  mkdir -p ~/.openclaw/workspace ~/.orchestra
+
+  # --- Persist secret env vars for SSH sessions ---
+  # Secrets are only available during setup/run scripts, not SSH sessions.
+  # Write them to ~/.orchestra/env so the TUI can load them when spawning pi.
+  cat > ~/.orchestra/env << EOF
+GLM_API_KEY=$GLM_API_KEY
+SKY_API_ENDPOINT=$SKY_API_ENDPOINT
+SKY_API_TOKEN=$SKY_API_TOKEN
+GIT_EMAIL=$GIT_EMAIL
+GIT_NAME=$GIT_NAME
+GITHUB_TOKEN=$GITHUB_TOKEN
+LINEAR_TOKEN=$LINEAR_TOKEN
+EOF
+  chmod 600 ~/.orchestra/env
+
   openclaw daemon install || {
     echo "WARNING: openclaw daemon install failed; run 'openclaw daemon install' manually"
   }

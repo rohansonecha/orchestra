@@ -214,21 +214,7 @@ fn handle_list_key(app: &mut App, key: KeyEvent) -> bool {
             if app.input.trim().is_empty() {
                 // No input — attach to selected session.
                 if let Some((name, worktree_path)) = app.attach_selected() {
-                    // Suspend TUI, run pi interactively, resume.
-                    drop(suspend_tui());
-                    let status = Command::new("pi")
-                        .arg("--name")
-                        .arg(&name)
-                        .arg("--provider")
-                        .arg("glm")
-                        .arg("--model")
-                        .arg("zai-org/GLM-5.2-FP8")
-                        .current_dir(&worktree_path)
-                        .status();
-                    resume_tui();
-                    if let Err(e) = status {
-                        app.status_message = format!("pi attach failed: {e}");
-                    }
+                    attach_to_session(&name, &worktree_path, &mut app.status_message);
                     app.detach();
                 }
             } else {
@@ -237,20 +223,7 @@ fn handle_list_key(app: &mut App, key: KeyEvent) -> bool {
         }
         KeyCode::Right => {
             if let Some((name, worktree_path)) = app.attach_selected() {
-                drop(suspend_tui());
-                let status = Command::new("pi")
-                    .arg("--name")
-                    .arg(&name)
-                    .arg("--provider")
-                    .arg("glm")
-                    .arg("--model")
-                    .arg("zai-org/GLM-5.2-FP8")
-                    .current_dir(&worktree_path)
-                    .status();
-                resume_tui();
-                if let Err(e) = status {
-                    app.status_message = format!("pi attach failed: {e}");
-                }
+                attach_to_session(&name, &worktree_path, &mut app.status_message);
                 app.detach();
             }
         }
@@ -268,6 +241,26 @@ fn handle_list_key(app: &mut App, key: KeyEvent) -> bool {
         _ => {}
     }
     false
+}
+
+/// Suspend the TUI, run pi interactively in the session's worktree, then resume.
+fn attach_to_session(name: &str, worktree_path: &str, status_message: &mut String) {
+    drop(suspend_tui());
+    let env = session::load_env();
+    let status = Command::new("pi")
+        .arg("--name")
+        .arg(name)
+        .arg("--provider")
+        .arg("glm")
+        .arg("--model")
+        .arg("zai-org/GLM-5.2-FP8")
+        .current_dir(worktree_path)
+        .envs(&env)
+        .status();
+    resume_tui();
+    if let Err(e) = status {
+        *status_message = format!("pi attach failed: {e}");
+    }
 }
 
 fn suspend_tui() -> io::Result<()> {

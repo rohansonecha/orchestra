@@ -1,5 +1,6 @@
 // Session management — each session is a pi process running in a worktree.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -7,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 const SESSIONS_DIR: &str = "/home/sky/.orchestra/sessions";
+const ENV_FILE: &str = "/home/sky/.orchestra/env";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
@@ -72,6 +74,21 @@ impl Session {
     }
 }
 
+/// Load env vars from ~/.orchestra/env (written during main-box setup).
+/// Secrets are only available during setup scripts, not SSH sessions.
+/// The TUI loads them here so pi can resolve $GLM_API_KEY etc.
+pub fn load_env() -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    if let Ok(content) = std::fs::read_to_string(ENV_FILE) {
+        for line in content.lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                vars.insert(key.trim().to_string(), value.trim().to_string());
+            }
+        }
+    }
+    vars
+}
+
 pub fn spawn_pi(
     name: &str,
     worktree_path: &str,
@@ -84,8 +101,12 @@ pub fn spawn_pi(
     // ALL stdio redirected to null so pi's output never leaks into the TUI.
     // The session runs silently in the background; attach with Right arrow
     // to see it interactively.
-    Command::new("pi")
-        .arg("-p")
+    //
+    // Env vars are loaded from ~/.orchestra/env (written during setup)
+    // because SSH sessions don't have the secret env vars.
+    let env = load_env();
+    let mut cmd = Command::new("pi");
+    cmd.arg("-p")
         .arg(initial_prompt)
         .arg("--name")
         .arg(name)
@@ -94,10 +115,11 @@ pub fn spawn_pi(
         .arg("--model")
         .arg("zai-org/GLM-5.2-FP8")
         .current_dir(worktree_path)
+        .envs(&env)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+    cmd.spawn()
 }
 
 pub fn load_sessions() -> Vec<Session> {
