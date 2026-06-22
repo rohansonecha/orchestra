@@ -3,11 +3,14 @@
 # Launch:
 #   sky launch --infra "$SKY_INFRA" -c main-box skypilot/main-box.yaml
 #
-# Secrets are stored on the SkyPilot API server (secrets-manager plugin)
-# and resolved at launch time. Create them via the dashboard or API:
+# Secrets are stored on the SkyPilot API server and resolved at launch time:
 #   GLM_API_KEY       — vLLM bearer token
-#   SKY_API_ENDPOINT  — SkyPilot API server URL (for launching subagent sandboxes)
-#   SKY_API_TOKEN     — SkyPilot API server service-account token
+#   SKY_API_ENDPOINT  — SkyPilot API server URL
+#   SKY_API_TOKEN     — SkyPilot API server token
+#   GIT_EMAIL         — Git commit email
+#   GIT_NAME          — Git commit name
+#   GITHUB_TOKEN      — GitHub PAT (for cloning private repos)
+#   LINEAR_TOKEN      — Linear API token
 #
 # Private files copied via file_mounts (from private/ on the launching machine):
 #   private/models.json                    → ~/.pi/agent/models.json
@@ -37,6 +40,13 @@ file_mounts:
   ~/.openclaw/workspace/SOUL.md: private/openclaw/workspace/SOUL.md
   ~/.openclaw/workspace/TOOLS.md: private/openclaw/workspace/TOOLS.md
   ~/.openclaw/workspace/USER.md: private/openclaw/workspace/USER.md
+  ~/.openclaw/workspace-work/AGENTS.md: private/openclaw/workspace-work/AGENTS.md
+  ~/.openclaw/workspace-work/BOOTSTRAP.md: private/openclaw/workspace-work/BOOTSTRAP.md
+  ~/.openclaw/workspace-work/HEARTBEAT.md: private/openclaw/workspace-work/HEARTBEAT.md
+  ~/.openclaw/workspace-work/IDENTITY.md: private/openclaw/workspace-work/IDENTITY.md
+  ~/.openclaw/workspace-work/SOUL.md: private/openclaw/workspace-work/SOUL.md
+  ~/.openclaw/workspace-work/TOOLS.md: private/openclaw/workspace-work/TOOLS.md
+  ~/.openclaw/workspace-work/USER.md: private/openclaw/workspace-work/USER.md
 
 # Secrets resolved from the SkyPilot API server at launch time.
 # These become env vars on the pod — no need to pass --env at launch.
@@ -44,14 +54,22 @@ secrets:
   - secrets:GLM_API_KEY
   - secrets:SKY_API_ENDPOINT
   - secrets:SKY_API_TOKEN
+  - secrets:GIT_EMAIL
+  - secrets:GIT_NAME
+  - secrets:GITHUB_TOKEN
+  - secrets:LINEAR_TOKEN
 
 setup: |
   set -euo pipefail
 
-  # --- Node.js 22 (for openclaw + pi) ---
+  # --- Node.js 22 (for openclaw + pi + TUI) ---
   # Default image has no Node; install via NodeSource.
   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
   sudo apt-get install -y nodejs
+
+  # --- Install Rust (for building the TUI) ---
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  source ~/.cargo/env
 
   # --- Install pi coding agent ---
   sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent
@@ -66,11 +84,38 @@ setup: |
     echo "WARNING: sky api login failed; subagent launching will not work"
   }
 
-  # --- Clone this repo (for YAMLs + skill code) ---
-  git clone https://github.com/rohansonecha/orchestra.git ~/orchestra
+  # --- Global git config (from secrets) ---
+  git config --global user.name "$GIT_NAME"
+  git config --global user.email "$GIT_EMAIL"
+  git config --global init.defaultBranch main
+
+  # --- Clone orchestra repo (YAMLs, skill code, TUI source) ---
+  if [ ! -d ~/orchestra ]; then
+    git clone https://github.com/rohansonecha/orchestra.git ~/orchestra
+  fi
+
+  # --- Clone work repo (private, uses GITHUB_TOKEN) ---
+  # WORK_REPO is set in private/env on the launching machine, not a secret.
+  # We hardcode the clone here using the token; the repo URL itself is not
+  # sensitive (it's just a private GitHub repo name) but we don't commit it
+  # to the public orchestra repo. The work repo path is referenced via
+  # $HOME/work-repos/prototype in the TUI and work agent config.
+  mkdir -p ~/work-repos
+  if [ ! -d ~/work-repos/prototype ]; then
+    git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/assemble-org/prototype.git" ~/work-repos/prototype || {
+      echo "WARNING: work repo clone failed; check GITHUB_TOKEN has access to assemble-org/prototype"
+    }
+  fi
 
   # --- Install OpenClaw ---
   sudo npm install -g openclaw@latest
+
+  # --- Build the TUI ---
+  cd ~/orchestra/tui && cargo build --release || {
+    echo "WARNING: TUI build failed; run 'cargo build --release' in ~/orchestra/tui manually"
+  }
+  # Symlink so 'orchestra-tui' is on PATH
+  sudo ln -sf ~/orchestra/tui/target/release/orchestra-tui /usr/local/bin/orchestra-tui
 
   # --- Start OpenClaw gateway ---
   # Config is already mounted at ~/.openclaw/openclaw.json (via file_mounts),
@@ -86,4 +131,5 @@ run: |
   # Keep the box alive. The OpenClaw gateway runs as a systemd service.
   echo "Main box ready. OpenClaw gateway should be running."
   echo "Check status: openclaw daemon status"
+  echo "Launch TUI: orchestra-tui"
   sleep infinity

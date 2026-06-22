@@ -1,0 +1,18 @@
+[package]
+name = "orchestra-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal UI for managing parallel pi coding agent sessions with worktree isolation"
+
+[[bin]]
+name = "orchestra-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = { version = "0.28", features = ["crossterm"] }
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"

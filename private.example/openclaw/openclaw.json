@@ -8,7 +8,24 @@
       "model": {
         "primary": "vllm/zai-org/GLM-5.2-FP8"
       }
-    }
+    },
+    "list": [
+      {
+        "id": "main",
+        "identity": {
+          "name": "Orchestra",
+          "emoji": "🎼"
+        }
+      },
+      {
+        "id": "work",
+        "workspace": "/home/sky/.openclaw/workspace-work",
+        "identity": {
+          "name": "Work Agent",
+          "emoji": "💼"
+        }
+      }
+    ]
   },
   "gateway": {
     "mode": "local",
