@@ -147,21 +147,17 @@ pub fn save_sessions(sessions: &[Session]) {
         let dir = PathBuf::from(SESSIONS_DIR).join(&sess.name);
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("state.json");
-        // Don't serialize the child process handle.
-        let sess_no_child = Session {
+        // Clone without the child handle (child is skipped in serde).
+        let to_save = Session {
             child: None,
-            ..serde_json::from_str::<Session>(&serde_json::to_string(sess).unwrap_or_default())
-                .unwrap_or_else(|_| Session {
-                    name: sess.name.clone(),
-                    prompt: sess.prompt.clone(),
-                    worktree_path: sess.worktree_path.clone(),
-                    created_at: sess.created_at,
-                    last_activity: sess.last_activity,
-                    state: sess.state,
-                    child: None,
-                })
+            name: sess.name.clone(),
+            prompt: sess.prompt.clone(),
+            worktree_path: sess.worktree_path.clone(),
+            created_at: sess.created_at,
+            last_activity: sess.last_activity,
+            state: sess.state,
         };
-        if let Ok(json) = serde_json::to_string_pretty(&sess_no_child) {
+        if let Ok(json) = serde_json::to_string_pretty(&to_save) {
             std::fs::write(path, json).ok();
         }
     }
