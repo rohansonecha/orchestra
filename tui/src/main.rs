@@ -262,12 +262,13 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     f.render_widget(input, input_area);
 
     // Status bar
+    let debug = format!("area: {}x{} list:{} input:{} status:{}", area.width, area.height, list_area.height, input_area.height, status_area.height);
     let status = if !app.status_message.is_empty() {
-        app.status_message.as_str()
+        format!("{} | {}", app.status_message, debug)
     } else if app.sessions.is_empty() {
-        "No sessions. Type a prompt above and press Enter to start."
+        debug
     } else {
-        ""
+        debug
     };
     let status_bar = Paragraph::new(status).style(Style::default().fg(Color::Yellow));
     f.render_widget(status_bar, status_area);
