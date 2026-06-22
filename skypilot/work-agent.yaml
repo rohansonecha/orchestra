@@ -3,7 +3,7 @@
 # Launched by the OpenClaw sky-coding-agent skill, or manually for testing:
 #   sky launch --infra "$SKY_INFRA" -c work-agent-<task-id> skypilot/work-agent.yaml
 #
-# Required env vars (passed via --env from the main box):
+# Secrets resolved from the SkyPilot API server at launch time:
 #   GLM_API_KEY  vLLM bearer token
 #
 # Private files copied via file_mounts:
@@ -21,8 +21,9 @@ file_mounts:
   ~/.pi/agent/models.json: private/models.json
   ~/.pi/agent/agents/work.md: private/agents/work.md
 
-envs:
-  GLM_API_KEY: $GLM_API_KEY
+# Secret resolved from the SkyPilot API server — no --env needed at launch.
+secrets:
+  - GLM_API_KEY
 
 setup: |
   set -euo pipefail

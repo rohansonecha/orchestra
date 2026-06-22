@@ -1,14 +1,13 @@
 # main-box.yaml — Long-lived OpenClaw orchestrator
 #
 # Launch:
-#   source private/env
 #   sky launch --infra "$SKY_INFRA" -c main-box skypilot/main-box.yaml
 #
-# Required env vars (set in private/env, passed via --env):
-#   GLM_API_KEY      vLLM bearer token
-#   GLM_BASE_URL     vLLM OpenAI endpoint (e.g. http://host/v1)
-#   SKY_API_ENDPOINT SkyPilot API server URL (for launching subagent sandboxes)
-#   SKY_API_TOKEN    SkyPilot API server service-account token
+# Secrets are stored on the SkyPilot API server (secrets-manager plugin)
+# and resolved at launch time. Create them via the dashboard or API:
+#   GLM_API_KEY       — vLLM bearer token
+#   SKY_API_ENDPOINT  — SkyPilot API server URL (for launching subagent sandboxes)
+#   SKY_API_TOKEN     — SkyPilot API server service-account token
 #
 # Private files copied via file_mounts (from private/ on the launching machine):
 #   private/models.json   → ~/.pi/agent/models.json  (real GLM endpoint)
@@ -29,12 +28,12 @@ file_mounts:
   ~/.pi/agent/models.json: private/models.json
   ~/.pi/agent/agents/work.md: private/agents/work.md
 
-# Env vars passed through from the launching machine via --env.
-# GLM_API_KEY is resolved at runtime by pi's !printf command in models.json.
-envs:
-  GLM_BASE_URL: $GLM_BASE_URL
-  SKY_API_ENDPOINT: $SKY_API_ENDPOINT
-  SKY_API_TOKEN: $SKY_API_TOKEN
+# Secrets resolved from the SkyPilot API server at launch time.
+# These become env vars on the pod — no need to pass --env at launch.
+secrets:
+  - GLM_API_KEY
+  - SKY_API_ENDPOINT
+  - SKY_API_TOKEN
 
 setup: |
   set -euo pipefail
@@ -52,7 +51,7 @@ setup: |
   pip3 install "skypilot[kubernetes]"
 
   # --- Login sky to the SkyPilot API server ---
-  # Token is passed via --env SKY_API_TOKEN
+  # Secrets are resolved as env vars: $SKY_API_ENDPOINT, $SKY_API_TOKEN
   sky api login -e "$SKY_API_ENDPOINT" --token "$SKY_API_TOKEN" || {
     echo "WARNING: sky api login failed; subagent launching will not work"
   }
