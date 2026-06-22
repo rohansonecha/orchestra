@@ -269,7 +269,7 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(input_title)
-                .footer_bottom(ratatui::text::Line::from(status).style(Style::default().fg(Color::Yellow))),
+                .title_bottom(ratatui::text::Line::from(status).style(Style::default().fg(Color::Yellow))),
         );
     f.render_widget(input, input_area);
 }
