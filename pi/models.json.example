@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "glm": {
+      "baseUrl": "http://YOUR_VLLM_HOST/v1",
+      "api": "openai-completions",
+      "apiKey": "!printf %s $GLM_API_KEY",
+      "models": [
+        {
+          "id": "zai-org/GLM-5.2-FP8",
+          "name": "GLM 5.2 (FP8, self-hosted vLLM)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 8192,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}

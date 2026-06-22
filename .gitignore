@@ -1,0 +1,15 @@
+# Private config — real endpoint URLs, tokens, repo refs. Never committed.
+private/
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Misc
+*.log
+.DS_Store
+.env
