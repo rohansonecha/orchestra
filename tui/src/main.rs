@@ -210,8 +210,12 @@ fn attach_to_session(name: &str, worktree_path: &str, status_message: &mut Strin
 
 fn ui(f: &mut ratatui::Frame, app: &App) {
     // Layout: session list (flexible) + dispatch input (3 rows) + status bar (1 row)
+    // Use explicit Length constraints with dynamic calculation to avoid
+    // layout solver issues with Min/Fill.
+    let total = f.area().height;
+    let list_h = total.saturating_sub(4); // 3 for input + 1 for status
     let chunks = Layout::vertical([
-        Constraint::Fill(1),
+        Constraint::Length(list_h),
         Constraint::Length(3),
         Constraint::Length(1),
     ])
