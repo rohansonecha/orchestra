@@ -257,13 +257,7 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     } else {
         " Press Enter to dispatch "
     };
-    let status = if !app.status_message.is_empty() {
-        app.status_message.as_str()
-    } else if app.sessions.is_empty() {
-        "No sessions yet"
-    } else {
-        ""
-    };
+    let status = format!("area:{}x{} list_h:{} input_y:{}", area.width, area.height, list_h, area.y + list_h);
     let input = Paragraph::new(app.input.as_str())
         .block(
             Block::default()
