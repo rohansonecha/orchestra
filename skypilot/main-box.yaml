@@ -10,8 +10,10 @@
 #   SKY_API_TOKEN     — SkyPilot API server service-account token
 #
 # Private files copied via file_mounts (from private/ on the launching machine):
-#   private/models.json   → ~/.pi/agent/models.json  (real GLM endpoint)
-#   private/agents/work.md → ~/.pi/agent/agents/work.md (real work recipe)
+#   private/models.json                    → ~/.pi/agent/models.json
+#   private/agents/work.md                 → ~/.pi/agent/agents/work.md
+#   private/openclaw/openclaw.json         → ~/.openclaw/openclaw.json
+#   private/openclaw/workspace/*.md        → ~/.openclaw/workspace/*.md
 
 resources:
   cloud: kubernetes
@@ -27,6 +29,14 @@ resources:
 file_mounts:
   ~/.pi/agent/models.json: private/models.json
   ~/.pi/agent/agents/work.md: private/agents/work.md
+  ~/.openclaw/openclaw.json: private/openclaw/openclaw.json
+  ~/.openclaw/workspace/AGENTS.md: private/openclaw/workspace/AGENTS.md
+  ~/.openclaw/workspace/BOOTSTRAP.md: private/openclaw/workspace/BOOTSTRAP.md
+  ~/.openclaw/workspace/HEARTBEAT.md: private/openclaw/workspace/HEARTBEAT.md
+  ~/.openclaw/workspace/IDENTITY.md: private/openclaw/workspace/IDENTITY.md
+  ~/.openclaw/workspace/SOUL.md: private/openclaw/workspace/SOUL.md
+  ~/.openclaw/workspace/TOOLS.md: private/openclaw/workspace/TOOLS.md
+  ~/.openclaw/workspace/USER.md: private/openclaw/workspace/USER.md
 
 # Secrets resolved from the SkyPilot API server at launch time.
 # These become env vars on the pod — no need to pass --env at launch.
@@ -62,12 +72,18 @@ setup: |
   # --- Install OpenClaw ---
   sudo npm install -g openclaw@latest
 
-  # --- Configure OpenClaw ---
-  # openclaw onboard will be run manually on first boot (interactive),
-  # OR configured via openclaw config files in a later step.
+  # --- Start OpenClaw gateway ---
+  # Config is already mounted at ~/.openclaw/openclaw.json (via file_mounts),
+  # so no interactive onboard is needed. The apiKey field uses
+  # "!printf %s $GLM_API_KEY" which reads the env var set by secrets-manager.
+  mkdir -p ~/.openclaw/workspace
+  openclaw daemon install || {
+    echo "WARNING: openclaw daemon install failed; run 'openclaw daemon install' manually"
+  }
+  openclaw daemon start || true
 
 run: |
-  # Keep the box alive. OpenClaw gateway is started as a systemd service
-  # (configured during onboard). This just prevents the cluster from going idle.
-  echo "Main box ready. SSH in and run: openclaw onboard --install-daemon"
+  # Keep the box alive. The OpenClaw gateway runs as a systemd service.
+  echo "Main box ready. OpenClaw gateway should be running."
+  echo "Check status: openclaw daemon status"
   sleep infinity

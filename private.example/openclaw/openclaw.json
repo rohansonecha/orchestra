@@ -1,0 +1,125 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/home/sky/.openclaw/workspace",
+      "models": {
+        "vllm/zai-org/GLM-5.2-FP8": {}
+      },
+      "model": {
+        "primary": "vllm/zai-org/GLM-5.2-FP8"
+      }
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "YOUR_GATEWAY_TOKEN"
+    },
+    "port": 18789,
+    "bind": "loopback",
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "controlUi": {
+      "allowInsecureAuth": true
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send",
+        "sms.search"
+      ]
+    }
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "tools": {
+    "profile": "coding",
+    "web": {
+      "search": {
+        "provider": "duckduckgo",
+        "enabled": true
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "vllm": {
+        "enabled": true
+      },
+      "duckduckgo": {
+        "enabled": true
+      }
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "vllm": {
+        "baseUrl": "http://YOUR_VLLM_HOST/default/glm-5-2/v1",
+        "api": "openai-completions",
+        "apiKey": "!printf %s $GLM_API_KEY",
+        "models": [
+          {
+            "id": "zai-org/GLM-5.2-FP8",
+            "name": "zai-org/GLM-5.2-FP8",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "auth": {
+    "profiles": {
+      "vllm:default": {
+        "provider": "vllm",
+        "mode": "api_key"
+      }
+    }
+  },
+  "meta": {
+    "lastTouchedVersion": "2026.6.9",
+    "lastTouchedAt": "2026-06-22T02:19:25.981Z"
+  },
+  "hooks": {
+    "internal": {
+      "enabled": true,
+      "entries": {
+        "command-logger": {
+          "enabled": true
+        },
+        "compaction-notifier": {
+          "enabled": true
+        },
+        "session-memory": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "wizard": {
+    "lastRunAt": "2026-06-22T02:19:25.834Z",
+    "lastRunVersion": "2026.6.9",
+    "lastRunCommand": "onboard",
+    "lastRunMode": "local"
+  }
+}
