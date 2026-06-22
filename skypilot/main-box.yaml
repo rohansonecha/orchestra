@@ -31,9 +31,9 @@ file_mounts:
 # Secrets resolved from the SkyPilot API server at launch time.
 # These become env vars on the pod — no need to pass --env at launch.
 secrets:
-  - GLM_API_KEY
-  - SKY_API_ENDPOINT
-  - SKY_API_TOKEN
+  - secrets:GLM_API_KEY
+  - secrets:SKY_API_ENDPOINT
+  - secrets:SKY_API_TOKEN
 
 setup: |
   set -euo pipefail

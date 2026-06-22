@@ -23,7 +23,7 @@ file_mounts:
 
 # Secret resolved from the SkyPilot API server — no --env needed at launch.
 secrets:
-  - GLM_API_KEY
+  - secrets:GLM_API_KEY
 
 setup: |
   set -euo pipefail
