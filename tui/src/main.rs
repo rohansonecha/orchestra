@@ -16,7 +16,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -210,16 +210,11 @@ fn attach_to_session(name: &str, worktree_path: &str, status_message: &mut Strin
 
 fn ui(f: &mut ratatui::Frame, app: &App) {
     // Layout: session list (flexible) + dispatch input (3 rows) + status bar (1 row)
-    // Use explicit Length constraints with dynamic calculation to avoid
-    // layout solver issues with Min/Fill.
-    let total = f.area().height;
-    let list_h = total.saturating_sub(4); // 3 for input + 1 for status
-    let chunks = Layout::vertical([
-        Constraint::Length(list_h),
-        Constraint::Length(3),
-        Constraint::Length(1),
-    ])
-    .split(f.area());
+    // Bypass Layout solver — manually calculate areas for exact control.
+    let area = f.area();
+    let list_area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(4));
+    let input_area = Rect::new(area.x, area.y + area.height.saturating_sub(4), area.width, 3);
+    let status_area = Rect::new(area.x, area.y + area.height.saturating_sub(1), area.width, 1);
 
     // Session list
     let items: Vec<ListItem> = app
@@ -254,7 +249,7 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
-    f.render_stateful_widget(list, chunks[0], &mut app.list_state.clone());
+    f.render_stateful_widget(list, list_area, &mut app.list_state.clone());
 
     // Dispatch input
     let input_title = if app.input.is_empty() {
@@ -264,7 +259,7 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     };
     let input = Paragraph::new(app.input.as_str())
         .block(Block::default().borders(Borders::ALL).title(input_title));
-    f.render_widget(input, chunks[1]);
+    f.render_widget(input, input_area);
 
     // Status bar
     let status = if !app.status_message.is_empty() {
@@ -275,5 +270,5 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         ""
     };
     let status_bar = Paragraph::new(status).style(Style::default().fg(Color::Yellow));
-    f.render_widget(status_bar, chunks[2]);
+    f.render_widget(status_bar, status_area);
 }
