@@ -36,6 +36,7 @@ struct App {
     list_state: ListState,
     input: String,
     status_message: String,
+    needs_clear: bool,
 }
 
 impl App {
@@ -45,6 +46,7 @@ impl App {
             list_state: ListState::default(),
             input: String::new(),
             status_message: String::new(),
+            needs_clear: false,
         };
         if !app.sessions.is_empty() {
             app.list_state.select(Some(0));
@@ -124,6 +126,10 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::new();
 
     loop {
+        if app.needs_clear {
+            terminal.clear()?;
+            app.needs_clear = false;
+        }
         terminal.draw(|f| ui(f, &mut app))?;
 
         if event::poll(std::time::Duration::from_millis(100))? {
@@ -159,6 +165,7 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
                         app.sessions[idx].worktree_path.clone(),
                     );
                     attach_to_session(&name, &path, &mut app.status_message);
+                    app.needs_clear = true;
                 }
             } else {
                 app.dispatch_new();
@@ -171,6 +178,7 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
                     app.sessions[idx].worktree_path.clone(),
                 );
                 attach_to_session(&name, &path, &mut app.status_message);
+                app.needs_clear = true;
             }
         }
         KeyCode::Backspace => {
