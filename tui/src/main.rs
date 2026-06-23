@@ -216,46 +216,9 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     let list_area = Rect::new(area.x, area.y, area.width, list_h);
     let input_area = Rect::new(area.x, area.y + list_h, area.width, 3);
 
-    // Session list — use Paragraph instead of List to test border rendering
-    let title = format!(
-        " Sessions ({}active) — ↑↓ navigate, → attach, Enter dispatch ",
-        app.sessions
-            .iter()
-            .filter(|s| s.state == SessionState::Working)
-            .count()
-    );
-    let lines: Vec<Line> = app.sessions.iter().map(|s| {
-        let icon = match s.state {
-            SessionState::Working => Span::styled("● ", Style::default().fg(Color::Yellow)),
-            SessionState::NeedsInput => Span::styled("● ", Style::default().fg(Color::Cyan)),
-            SessionState::Idle => Span::styled("○ ", Style::default().fg(Color::DarkGray)),
-            SessionState::Completed => Span::styled("● ", Style::default().fg(Color::Green)),
-            SessionState::Failed => Span::styled("● ", Style::default().fg(Color::Red)),
-        };
-        let name = Span::styled(
-            format!("{:<24}", s.name),
-            Style::default().add_modifier(Modifier::BOLD),
-        );
-        let prompt = Span::raw(s.prompt.chars().take(60).collect::<String>());
-        Line::from(vec![icon, name, Span::raw(" "), prompt])
-    }).collect();
-    let list_widget = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(list_widget, list_area);
-
-    // Dispatch input with status in the footer
-    let input_title = if app.input.is_empty() {
-        " Type a prompt + Enter to dispatch new session "
-    } else {
-        " Press Enter to dispatch "
-    };
-    let status = format!("area:{}x{} list_h:{} input_y:{}", area.width, area.height, list_h, area.y + list_h);
-    let input = Paragraph::new(app.input.as_str())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(input_title)
-                .title_bottom(ratatui::text::Line::from(status).style(Style::default().fg(Color::Yellow))),
-        );
-    f.render_widget(input, input_area);
+    // TEST: render only the session list block, nothing else
+    let test_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Test Block — should have bottom border ");
+    f.render_widget(test_block, area);
 }
