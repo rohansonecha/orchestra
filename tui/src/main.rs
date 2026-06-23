@@ -152,6 +152,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
+    // Clear status message on any key press — it's transient.
+    app.status_message.clear();
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
@@ -201,13 +203,16 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
 }
 
 fn attach_to_session(name: &str, _worktree_path: &str, status_message: &mut String) {
+    // Don't leave the alternate screen — tmux handles its own screen
+    // management. Leaving/entering the alternate screen causes a flash
+    // of the normal terminal buffer between transitions.
     disable_raw_mode().ok();
-    execute!(io::stdout(), LeaveAlternateScreen).ok();
 
     let status = Command::new("tmux").arg("attach").arg("-t").arg(name).status();
 
     enable_raw_mode().ok();
-    execute!(io::stdout(), EnterAlternateScreen, Clear(ClearType::All)).ok();
+    // Force a full redraw — tmux corrupted our screen buffer.
+    execute!(io::stdout(), Clear(ClearType::All)).ok();
 
     match status {
         Ok(s) if !s.success() => {
