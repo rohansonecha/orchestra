@@ -13,7 +13,7 @@ use std::process::Command;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
@@ -191,7 +191,7 @@ fn attach_to_session(name: &str, _worktree_path: &str, status_message: &mut Stri
     let status = Command::new("tmux").arg("attach").arg("-t").arg(name).status();
 
     enable_raw_mode().ok();
-    execute!(io::stdout(), EnterAlternateScreen).ok();
+    execute!(io::stdout(), EnterAlternateScreen, Clear(ClearType::All)).ok();
 
     match status {
         Ok(s) if !s.success() => {
