@@ -148,6 +148,11 @@ LINEAR_TOKEN=$LINEAR_TOKEN
 EOF
   chmod 600 ~/.orchestra/env
 
+  # --- Skills directory ---
+  # Skills live in ~/orchestra/skills/ (version controlled). Symlink to
+  # ~/.orchestra/skills so the TUI can find them and sessions can read/write.
+  ln -sfn ~/orchestra/skills ~/.orchestra/skills
+
   openclaw daemon install || {
     echo "WARNING: openclaw daemon install failed; run 'openclaw daemon install' manually"
   }

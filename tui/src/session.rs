@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 const SESSIONS_DIR: &str = "/home/sky/.orchestra/sessions";
 const ENV_FILE: &str = "/home/sky/.orchestra/env";
+const SKILLS_DIR: &str = "/home/sky/.orchestra/skills";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
@@ -64,6 +65,35 @@ impl Session {
     }
 }
 
+/// Concatenate all skill files from ~/.orchestra/skills/*.md into a temp
+/// file and return its path. Returns None if no skills exist.
+fn load_skills_prompt() -> Option<String> {
+    let mut content = String::new();
+    let mut entries: Vec<_> = std::fs::read_dir(SKILLS_DIR).ok()?.flatten().collect();
+    entries.sort_by_key(|e| e.path());
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "md") {
+            continue;
+        }
+        let name = path.file_name()?.to_string_lossy();
+        if name == "README.md" {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            content.push_str(&text);
+            content.push_str("\n\n---\n\n");
+        }
+    }
+    if content.is_empty() {
+        return None;
+    }
+    // Write to a temp file — pi reads it via --append-system-prompt.
+    let path = format!("/tmp/orchestra-skills-{unix}.md", unix = unix_now());
+    std::fs::write(&path, &content).ok()?;
+    Some(path)
+}
+
 /// Load env vars from ~/.orchestra/env (written during main-box setup).
 /// Secrets are only available during setup scripts, not SSH sessions.
 /// The TUI loads them here so pi can resolve $GLM_API_KEY etc.
@@ -93,8 +123,17 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
     // Escape single quotes for bash — the only char that needs escaping
     // inside single-quoted strings.
     let escaped = initial_prompt.replace('\'', "'\\''");
+
+    // Concatenate all skill files into a temp file and pass via
+    // --append-system-prompt so sessions load skills automatically.
+    let skills_prompt = load_skills_prompt();
+    let skills_flag = match &skills_prompt {
+        Some(path) => format!("--append-system-prompt {path}"),
+        None => String::new(),
+    };
+
     let cmd_str = format!(
-        "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8; sleep 1; done"
+        "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
     );
 
     // Set global tmux options BEFORE creating the session so the session
