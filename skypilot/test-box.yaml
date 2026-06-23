@@ -26,6 +26,7 @@ resources:
 file_mounts:
   ~/.pi/agent/models.json: private/models.json
   ~/.pi/agent/agents/work.md: private/agents/work.md
+  ~/.pi/agent/themes/orchestra.json: skypilot/pi-theme.json
 
 # Same secrets as main-box.
 secrets:
@@ -50,6 +51,9 @@ setup: |
 
   # --- Install pi coding agent ---
   sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+  # --- Pi settings (theme) ---
+  echo '{"theme":"orchestra"}' > ~/.pi/agent/settings.json
 
   # --- Install tui-use (for automated TUI testing) ---
   sudo npm install -g tui-use
