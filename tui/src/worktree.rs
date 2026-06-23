@@ -67,6 +67,38 @@ pub fn create_worktree(repo_path: &str, worktree_path: &str, name: &str) -> std:
         ));
     }
 
+    // Write an AGENTS.md file into the worktree. Pi discovers AGENTS.md
+    // in the working directory and loads it as context. This overrides
+    // the prototype repo's CLAUDE.md "Team Skills" section, which tells
+    // agents to write skills to agents/skills/ (Skillshare). We want
+    // orchestra sessions to write skills to ~/.orchestra/skills/ instead.
+    let agents_md = format!("{worktree_path}/AGENTS.md");
+    std::fs::write(&agents_md, "\
+# Orchestra Session
+
+You are running as an orchestra session in a worktree of the prototype repo.
+
+## Skills — IMPORTANT
+
+When asked to \"write a skill\", write it to:
+
+    ~/.orchestra/skills/<name>.md
+
+This is the ONLY correct location for orchestra skills. After writing,
+commit and push:
+
+    cd ~/orchestra && git add skills/ && git commit -m \"skill: <name>\" && git push origin main
+
+Do NOT write skills to `agents/skills/` in this repo. That directory
+contains team Skillshare skills — a completely different system. The
+CLAUDE.md in this repo describes those as \"Team Skills\" but that does
+NOT apply to orchestra skills.
+
+When someone asks \"where would you write a skill\", the answer is
+`~/.orchestra/skills/<name>.md`. Not `agents/skills/`, not Skillshare,
+not `SKILL.md` files. Always `~/.orchestra/skills/<name>.md`.
+")?;
+
     Ok(())
 }
 
