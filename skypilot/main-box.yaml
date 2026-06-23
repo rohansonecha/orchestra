@@ -89,9 +89,9 @@ setup: |
   git config --global user.email "$GIT_EMAIL"
   git config --global init.defaultBranch main
 
-  # --- Clone orchestra repo (YAMLs, skill code, TUI source) ---
+  # --- Clone orchestra repo (private, uses GITHUB_TOKEN) ---
   if [ ! -d ~/orchestra ]; then
-    git clone https://github.com/rohansonecha/orchestra.git ~/orchestra
+    git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/rohansonecha/orchestra.git" ~/orchestra
   fi
 
   # --- Clone work repo (private, uses GITHUB_TOKEN) ---
