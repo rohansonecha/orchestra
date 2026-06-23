@@ -97,13 +97,47 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
         "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8; sleep 1; done"
     );
 
+    // Set global tmux options BEFORE creating the session so the session
+    // inherits them. default-terminal must be screen-256color for pi's
+    // color escape sequences to render correctly (the default "screen"
+    // only supports 8 colors, causing weird highlighting on normal text).
+    Command::new("tmux")
+        .args(["set", "-g", "default-terminal", "screen-256color"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    Command::new("tmux")
+        .args(["set", "-ga", "terminal-overrides", ",*256col*:Tc"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    Command::new("tmux")
+        .args(["set", "-g", "extended-keys", "on"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    Command::new("tmux")
+        .args(["set", "-g", "remain-on-exit", "on"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    // Left arrow and Ctrl+C detach back to the orchestra TUI (root table
+    // = no prefix needed). Ctrl+C would otherwise exit pi and kill the
+    // session.
+    for key in ["Left", "C-c"] {
+        Command::new("tmux")
+            .args(["bind-key", "-n", key, "detach-client"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+    }
+
     let status = Command::new("tmux")
-        .arg("new-session")
-        .arg("-d")
-        .arg("-s")
-        .arg(name)
-        .arg("-c")
-        .arg(worktree_path)
+        .args(["new-session", "-d", "-s", name, "-c", worktree_path])
         .arg("bash")
         .arg("-c")
         .arg(&cmd_str)
@@ -117,42 +151,6 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
             "tmux new-session failed",
         ));
     }
-
-    // Global tmux settings (idempotent — safe to run for every session).
-    // Left arrow and Ctrl+C detach back to the orchestra TUI (root table
-    // = no prefix needed). Ctrl+C would otherwise exit pi and kill the
-    // session.
-    for key in ["Left", "C-c"] {
-        Command::new("tmux")
-            .arg("bind-key")
-            .arg("-n")
-            .arg(key)
-            .arg("detach-client")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-    }
-
-    // Keep pane alive even if all processes exit, so the user can see
-    // what happened instead of getting a dead session.
-    Command::new("tmux")
-        .arg("set")
-        .arg("-g")
-        .arg("remain-on-exit")
-        .arg("on")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    // Enable extended-keys for proper Enter/modified key handling.
-    Command::new("tmux")
-        .arg("set")
-        .arg("-g")
-        .arg("extended-keys")
-        .arg("on")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
 
     Ok(())
 }
