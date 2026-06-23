@@ -130,12 +130,15 @@ pub fn load_env() -> HashMap<String, String> {
     vars
 }
 
-/// Spawn pi inside a detached tmux session. The initial prompt is run via
-/// `pi -p` (print mode) so it starts processing immediately on dispatch.
-/// After print mode finishes, interactive pi starts in a restart loop —
-/// if pi exits (crash, Ctrl+C, etc.), it restarts so the session stays
-/// attachable. pi persists conversation history by --name, so restarts
-/// resume the existing conversation.
+/// Spawn pi inside a detached tmux session. Interactive pi starts
+/// immediately and the initial prompt is sent as keystrokes after a
+/// short delay (to let pi's UI render). This way the session becomes
+/// attachable in ~3 seconds and the user can watch pi think in real
+/// time, rather than waiting for print mode to finish.
+///
+/// If pi exits (crash, Ctrl+C, etc.), a restart loop relaunches it.
+/// pi persists conversation history by --name, so restarts resume
+/// the existing conversation.
 ///
 /// Left arrow and Ctrl+C are bound to detach-client so the user can
 /// return to the orchestra TUI without killing pi. Use Escape to
@@ -154,8 +157,11 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
     };
 
     let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
+    // Start interactive pi in the foreground. A background subshell
+    // waits 3 seconds for pi's UI to render, touches the ready marker
+    // (so the TUI allows attach), then sends the prompt as keystrokes.
     let cmd_str = format!(
-        "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; touch {ready_marker}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
+        "set -a; source {ENV_FILE}; set +a; (sleep 3; touch {ready_marker}; tmux send-keys -t {name} -l '{escaped}'; tmux send-keys -t {name} Enter) & pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
     );
 
     // Set global tmux options BEFORE creating the session so the session
