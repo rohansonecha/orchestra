@@ -310,7 +310,16 @@ fn attach_to_session(name: &str, _worktree_path: &str, status_message: &mut Stri
     // of the normal terminal buffer between transitions.
     disable_raw_mode().ok();
 
-    let status = Command::new("tmux").arg("attach").arg("-t").arg(name).status();
+    // The main-box has TERM=dumb (set by SkyPilot/SSH), but the actual
+    // terminal emulator supports 256 colors. Without overriding TERM,
+    // tmux renders pi's 256-color output incorrectly — dark green/blue
+    // backgrounds appear as grey highlighting on normal text.
+    let status = Command::new("tmux")
+        .arg("attach")
+        .arg("-t")
+        .arg(name)
+        .env("TERM", "xterm-256color")
+        .status();
 
     enable_raw_mode().ok();
     // Force a full redraw — tmux corrupted our screen buffer.
