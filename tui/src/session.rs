@@ -175,10 +175,28 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
         ) & pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
     );
 
-    // Set global tmux options BEFORE creating the session so the session
-    // inherits them. default-terminal must be screen-256color for pi's
-    // color escape sequences to render correctly (the default "screen"
-    // only supports 8 colors, causing weird highlighting on normal text).
+    // Create the session first so the tmux server is running and all
+    // subsequent commands go to the same server instance.
+    let status = Command::new("tmux")
+        .args(["new-session", "-d", "-s", name, "-c", worktree_path])
+        .arg("bash")
+        .arg("-c")
+        .arg(&cmd_str)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    if !status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "tmux new-session failed",
+        ));
+    }
+
+    // Set global tmux options now that the server is running.
+    // default-terminal must be screen-256color for pi's color escape
+    // sequences to render correctly (the default "screen" only supports
+    // 8 colors, causing weird highlighting on normal text).
     Command::new("tmux")
         .args(["set", "-g", "default-terminal", "screen-256color"])
         .stdout(Stdio::null())
@@ -204,30 +222,14 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
         .status()?;
 
     // Left arrow and Ctrl+C detach back to the orchestra TUI (root table
-    // = no prefix needed). Ctrl+C would otherwise exit pi and kill the
-    // session.
+    // = no prefix needed). Must be set after session creation so the
+    // tmux server is alive to receive the binding.
     for key in ["Left", "C-c"] {
         Command::new("tmux")
             .args(["bind-key", "-n", key, "detach-client"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()?;
-    }
-
-    let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", name, "-c", worktree_path])
-        .arg("bash")
-        .arg("-c")
-        .arg(&cmd_str)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    if !status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "tmux new-session failed",
-        ));
     }
 
     Ok(())
