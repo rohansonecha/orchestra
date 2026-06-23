@@ -30,6 +30,7 @@ use session::{Session, SessionState};
 const WORK_REPO_PATH: &str = "/home/sky/work-repos/prototype";
 const SESSIONS_DIR: &str = "/home/sky/.orchestra/sessions";
 const WORKTREES_DIR: &str = "/home/sky/orchestra/worktrees";
+const ORCHESTRA_DIR: &str = "/home/sky/orchestra";
 
 struct App {
     sessions: Vec<Session>,
@@ -114,6 +115,18 @@ impl App {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Subcommands
+    if let Some(cmd) = std::env::args().nth(1) {
+        match cmd.as_str() {
+            "upgrade" => return upgrade(),
+            "version" => {
+                println!("orchestra {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     std::fs::create_dir_all(SESSIONS_DIR).ok();
     std::fs::create_dir_all(WORKTREES_DIR).ok();
 
@@ -223,6 +236,30 @@ fn attach_to_session(name: &str, _worktree_path: &str, status_message: &mut Stri
         }
         _ => {}
     }
+}
+
+/// Pull latest code and rebuild the TUI binary. tmux sessions are
+/// independent processes — they survive the upgrade. The user just
+/// needs to restart the TUI after upgrading.
+fn upgrade() -> anyhow::Result<()> {
+    println!("Upgrading orchestra...");
+
+    let status = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "cd {ORCHESTRA_DIR} && git pull origin main && cd tui && source ~/.cargo/env && cargo build --release"
+        ))
+        .status()?;
+
+    if !status.success() {
+        eprintln!("\nUpgrade failed. Check errors above.");
+        std::process::exit(1);
+    }
+
+    println!("\nOrchestra upgraded successfully.");
+    println!("Your sessions are preserved in tmux — they are unaffected.");
+    println!("Run 'orchestra' to start the TUI with the new version.");
+    Ok(())
 }
 
 fn ui(f: &mut ratatui::Frame, app: &mut App) {
