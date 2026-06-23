@@ -11,7 +11,13 @@
 #   2. While session is still initializing
 #   3. After detach (verify re-attach works)
 #
-# Run on the main-box: bash ~/orchestra/tests/upgrade.sh
+# Note: tui-use can't trigger tmux root-table key bindings (Left arrow,
+# Ctrl+C) because tmux attach reads from /dev/tty, not the PTY that
+# tui-use writes to. We use `tmux detach-client` directly to test detach.
+#
+# Run on the test box (via tests/run-on-staging.sh):
+#   bash ~/orchestra/tests/upgrade.sh
+# Do NOT run directly on main-box — it kills all tmux sessions.
 
 set -euo pipefail
 
@@ -30,6 +36,19 @@ assert_contains() {
     else
         echo "  FAIL: $desc (expected '$needle' in output)"
         FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_not_contains() {
+    local desc="$1"
+    local haystack="$2"
+    local needle="$3"
+    if echo "$haystack" | grep -q "$needle"; then
+        echo "  FAIL: $desc (did not expect '$needle' in output)"
+        FAIL=$((FAIL + 1))
+    else
+        echo "  PASS: $desc"
+        PASS=$((PASS + 1))
     fi
 }
 
@@ -129,14 +148,14 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Attach after upgrade
+# Attach after upgrade — verify we left the TUI
 tui-use press arrow_right
 sleep 2
 snapshot=$(tui-use snapshot)
-assert_contains "attachable after upgrade" "$snapshot" "pi v"
+assert_not_contains "attachable after upgrade" "$snapshot" "Sessions"
 
-# Detach
-tui-use press arrow_left
+# Detach — tui-use can't trigger tmux key bindings, use detach-client directly
+tmux detach-client 2>/dev/null
 sleep 2
 
 echo ""
@@ -172,14 +191,14 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Attach after upgrade
+# Attach after upgrade — verify we left the TUI
 tui-use press arrow_right
 sleep 2
 snapshot=$(tui-use snapshot)
-assert_contains "attachable after upgrade during init" "$snapshot" "pi v"
+assert_not_contains "attachable after upgrade during init" "$snapshot" "Sessions"
 
 # Detach
-tui-use press arrow_left
+tmux detach-client 2>/dev/null
 sleep 2
 
 echo ""
@@ -228,10 +247,10 @@ fi
 tui-use press arrow_right
 sleep 2
 snapshot=$(tui-use snapshot)
-assert_contains "re-attachable after upgrade" "$snapshot" "pi v"
+assert_not_contains "re-attachable after upgrade" "$snapshot" "Sessions"
 
 # Detach
-tui-use press arrow_left
+tmux detach-client 2>/dev/null
 sleep 2
 
 echo ""

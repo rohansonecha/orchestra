@@ -116,8 +116,8 @@ setup: |
   set -ga terminal-overrides ",*256col*:Tc"
   set -g extended-keys on
   set -g remain-on-exit on
-  # Left arrow and Ctrl+C detach back to orchestra TUI
-  bind-key -n Left detach-client
+  # Left detaches only when cursor is at column 0, otherwise passes through
+  bind-key -n Left if-shell -F '#{==:#{cursor_x},0}' detach-client 'send-keys Left'
   bind-key -n C-c detach-client
   TMUXCONF
 
@@ -137,15 +137,15 @@ setup: |
   # --- Persist secret env vars for SSH sessions ---
   # Secrets are only available during setup/run scripts, not SSH sessions.
   # Write them to ~/.orchestra/env so the TUI can load them when spawning pi.
-  cat > ~/.orchestra/env << EOF
-GLM_API_KEY=$GLM_API_KEY
-SKY_API_ENDPOINT=$SKY_API_ENDPOINT
-SKY_API_TOKEN=$SKY_API_TOKEN
-GIT_EMAIL=$GIT_EMAIL
-GIT_NAME=$GIT_NAME
-GITHUB_TOKEN=$GITHUB_TOKEN
-LINEAR_TOKEN=$LINEAR_TOKEN
-EOF
+  {
+    echo "GLM_API_KEY=$GLM_API_KEY"
+    echo "SKY_API_ENDPOINT=$SKY_API_ENDPOINT"
+    echo "SKY_API_TOKEN=$SKY_API_TOKEN"
+    echo "GIT_EMAIL=$GIT_EMAIL"
+    echo "GIT_NAME=$GIT_NAME"
+    echo "GITHUB_TOKEN=$GITHUB_TOKEN"
+    echo "LINEAR_TOKEN=$LINEAR_TOKEN"
+  } > ~/.orchestra/env
   chmod 600 ~/.orchestra/env
 
   # --- Skills directory ---

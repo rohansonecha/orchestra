@@ -1,0 +1,114 @@
+# test-box.yaml — Ephemeral test environment for orchestra TUI tests.
+#
+# Identical to main-box minus OpenClaw. Used by tests/run-on-staging.sh
+# to run the test suite without disrupting live sessions on main-box.
+#
+# Launch (done automatically by tests/run-on-staging.sh):
+#   sky launch --infra "$SKY_INFRA" -c test-box skypilot/test-box.yaml
+#
+# Secrets (same as main-box, resolved from SkyPilot API server):
+#   GLM_API_KEY       — vLLM bearer token
+#   SKY_API_ENDPOINT  — SkyPilot API server URL
+#   SKY_API_TOKEN     — SkyPilot API server token
+#   GIT_EMAIL         — Git commit email
+#   GIT_NAME          — Git commit name
+#   GITHUB_TOKEN      — GitHub PAT (for cloning private repos)
+#   LINEAR_TOKEN      — Linear API token
+
+resources:
+  cloud: kubernetes
+  cpus: 4
+  memory: 16
+
+# No GPU needed — same as main-box, agents run on separate sandboxes.
+
+# Private config (same as main-box, minus OpenClaw workspace files).
+file_mounts:
+  ~/.pi/agent/models.json: private/models.json
+  ~/.pi/agent/agents/work.md: private/agents/work.md
+
+# Same secrets as main-box.
+secrets:
+  - secrets:GLM_API_KEY
+  - secrets:SKY_API_ENDPOINT
+  - secrets:SKY_API_TOKEN
+  - secrets:GIT_EMAIL
+  - secrets:GIT_NAME
+  - secrets:GITHUB_TOKEN
+  - secrets:LINEAR_TOKEN
+
+setup: |
+  set -euo pipefail
+
+  # --- Node.js 22 (for pi + tui-use + TUI) ---
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  sudo apt-get install -y nodejs tmux
+
+  # --- Install Rust (for building the TUI) ---
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  source ~/.cargo/env
+
+  # --- Install pi coding agent ---
+  sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+  # --- Install tui-use (for automated TUI testing) ---
+  sudo npm install -g tui-use
+
+  # --- Install sky CLI ---
+  pip3 install --upgrade pip
+  pip3 install "skypilot[kubernetes]"
+
+  # --- Login sky to the SkyPilot API server ---
+  sky api login -e "$SKY_API_ENDPOINT" --token "$SKY_API_TOKEN" || {
+    echo "WARNING: sky api login failed; subagent launching will not work"
+  }
+
+  # --- Global git config (from secrets) ---
+  git config --global user.name "$GIT_NAME"
+  git config --global user.email "$GIT_EMAIL"
+  git config --global init.defaultBranch main
+
+  # --- Clone orchestra repo (private, uses GITHUB_TOKEN) ---
+  git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/rohansonecha/orchestra.git" ~/orchestra
+
+  # --- Clone work repo (private, uses GITHUB_TOKEN) ---
+  mkdir -p ~/work-repos
+  git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/assemble-org/prototype.git" ~/work-repos/prototype || {
+    echo "WARNING: work repo clone failed; check GITHUB_TOKEN has access to assemble-org/prototype"
+  }
+
+  # --- tmux config (same as main-box) ---
+  cat > ~/.tmux.conf << 'TMUXCONF'
+  set -g default-terminal "screen-256color"
+  set -ga terminal-overrides ",*256col*:Tc"
+  set -g extended-keys on
+  set -g remain-on-exit on
+  bind-key -n Left if-shell -F '#{==:#{cursor_x},0}' detach-client 'send-keys Left'
+  bind-key -n C-c detach-client
+  TMUXCONF
+
+  # --- Build the TUI ---
+  cd ~/orchestra/tui && cargo build --release || {
+    echo "WARNING: TUI build failed; run 'cargo build --release' in ~/orchestra/tui manually"
+  }
+  sudo ln -sf ~/orchestra/tui/target/release/orchestra-tui /usr/local/bin/orchestra
+
+  # --- Persist secret env vars for SSH sessions ---
+  mkdir -p ~/.orchestra
+  {
+    echo "GLM_API_KEY=$GLM_API_KEY"
+    echo "SKY_API_ENDPOINT=$SKY_API_ENDPOINT"
+    echo "SKY_API_TOKEN=$SKY_API_TOKEN"
+    echo "GIT_EMAIL=$GIT_EMAIL"
+    echo "GIT_NAME=$GIT_NAME"
+    echo "GITHUB_TOKEN=$GITHUB_TOKEN"
+    echo "LINEAR_TOKEN=$LINEAR_TOKEN"
+  } > ~/.orchestra/env
+  chmod 600 ~/.orchestra/env
+
+  # --- Skills directory ---
+  ln -sfn ~/orchestra/skills ~/.orchestra/skills
+
+run: |
+  echo "Test box ready. Run: bash ~/orchestra/tests/run-all.sh"
+  sleep infinity

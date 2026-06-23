@@ -175,54 +175,31 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
         ) & pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
     );
 
-    // Start the tmux server WITHOUT creating a session first, so we
-    // can set global options before any session exists. This ensures
-    // sessions inherit correct terminal settings (256-color, true color).
-    Command::new("tmux")
-        .args(["start-server"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    // Set global tmux options before creating the session.
-    // default-terminal must be screen-256color for pi's color escape
-    // sequences to render correctly (the default "screen" only supports
-    // 8 colors, causing weird highlighting on normal text).
-    Command::new("tmux")
-        .args(["set", "-g", "default-terminal", "screen-256color"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    Command::new("tmux")
-        .args(["set", "-ga", "terminal-overrides", ",*256col*:Tc"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    Command::new("tmux")
-        .args(["set", "-g", "extended-keys", "on"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    Command::new("tmux")
-        .args(["set", "-g", "remain-on-exit", "on"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-
-    // Left arrow and Ctrl+C detach back to the orchestra TUI (root table
-    // = no prefix needed).
-    for key in ["Left", "C-c"] {
-        Command::new("tmux")
-            .args(["bind-key", "-n", key, "detach-client"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
+    // Write ~/.tmux.conf if it doesn't exist. The tmux server reads this
+    // file on startup (before creating any sessions), so settings like
+    // default-terminal are applied before the session's PTY is created.
+    // This is necessary because `tmux start-server` exits immediately
+    // when there are no sessions — all set/bind-key commands fail silently.
+    // The main-box has TERM=dumb, so without this, tmux defaults to
+    // "screen" (8 colors) causing weird highlighting in pi's output.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/sky".to_string());
+    let tmux_conf = format!("{home}/.tmux.conf");
+    if !std::path::Path::new(&tmux_conf).exists() {
+        std::fs::write(&tmux_conf, "\
+set -g default-terminal \"screen-256color\"
+set -ga terminal-overrides \",*256col*:Tc\"
+set -g extended-keys on
+set -g remain-on-exit on
+# Left detaches only when cursor is at column 0, otherwise passes through
+# to pi so the user can move the cursor left within the text input.
+bind-key -n Left if-shell -F '#{==:#{cursor_x},0}' detach-client 'send-keys Left'
+bind-key -n C-c detach-client
+")?;
     }
 
-    // Now create the session — it inherits all global options.
+    // Create the session — this starts the tmux server if it's not
+    // already running. The server reads ~/.tmux.conf on startup, so
+    // terminal settings and keybindings are applied before the session.
     let status = Command::new("tmux")
         .args(["new-session", "-d", "-s", name, "-c", worktree_path])
         .arg("bash")
@@ -238,6 +215,20 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
             "tmux new-session failed",
         ));
     }
+
+    // Set keybindings after session creation as a fallback, in case
+    // the tmux server was already running without ~/.tmux.conf.
+    // Left detaches only at column 0, otherwise passes through to pi.
+    Command::new("tmux")
+        .args(["bind-key", "-n", "Left", "if-shell", "-F", "#{==:#{cursor_x},0}", "detach-client", "send-keys", "Left"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    Command::new("tmux")
+        .args(["bind-key", "-n", "C-c", "detach-client"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
 
     Ok(())
 }
@@ -261,12 +252,20 @@ pub fn load_sessions() -> Vec<Session> {
 
 pub fn save_sessions(sessions: &[Session]) {
     for sess in sessions {
-        let dir = PathBuf::from(SESSIONS_DIR).join(&sess.name);
-        std::fs::create_dir_all(&dir).ok();
-        let path = dir.join("state.json");
-        if let Ok(json) = serde_json::to_string_pretty(sess) {
-            std::fs::write(path, json).ok();
-        }
+        save_session(sess);
+    }
+}
+
+/// Save a single session's state to disk. Called immediately after
+/// dispatch so that the session survives TUI crashes/upgrades — the
+/// TUI process is the control plane and can be killed at any time,
+/// but the session state must persist so a restarted TUI can find it.
+pub fn save_session(sess: &Session) {
+    let dir = PathBuf::from(SESSIONS_DIR).join(&sess.name);
+    std::fs::create_dir_all(&dir).ok();
+    let path = dir.join("state.json");
+    if let Ok(json) = serde_json::to_string_pretty(sess) {
+        std::fs::write(path, json).ok();
     }
 }
 

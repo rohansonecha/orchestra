@@ -3,8 +3,11 @@
 // Keybindings:
 //   Up/Down     — navigate session list
 //   Enter       — dispatch new session (if input non-empty) or attach to selected
-//   Right       — attach to selected session
-//   Left        — detach from session (inside tmux)
+//   Right       — move cursor right / attach to session (at end of empty input)
+//   Left        — move cursor left (detach inside tmux only at column 0)
+//   Alt+Left    — jump to previous word
+//   Alt+Right   — jump to next word
+//   Alt+Delete  — delete previous word
 //   q/Ctrl+C    — quit
 
 use std::io;
@@ -36,6 +39,7 @@ struct App {
     sessions: Vec<Session>,
     list_state: ListState,
     input: String,
+    cursor_pos: usize,
     status_message: String,
     needs_clear: bool,
 }
@@ -46,6 +50,7 @@ impl App {
             sessions: session::load_sessions(),
             list_state: ListState::default(),
             input: String::new(),
+            cursor_pos: 0,
             status_message: String::new(),
             needs_clear: false,
         };
@@ -102,8 +107,10 @@ impl App {
         match session::spawn_pi(&name, &worktree_path, &prompt) {
             Ok(()) => {
                 let sess = Session::new(name.clone(), prompt.clone(), worktree_path);
+                session::save_session(&sess);
                 self.sessions.push(sess);
                 self.input.clear();
+                self.cursor_pos = 0;
                 self.status_message = format!("Dispatched: {name}");
                 self.list_state.select(Some(self.sessions.len() - 1));
             }
@@ -164,9 +171,75 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Convert a character index to a byte index in a string.
+fn char_to_byte(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| s.len())
+}
+
 fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
     // Clear status message on any key press — it's transient.
     app.status_message.clear();
+
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+    // --- Alt (Option) modified keys: word-level operations ---
+    if alt {
+        match key.code {
+            // Alt+Left or Alt+b — jump to start of previous word
+            KeyCode::Left | KeyCode::Char('b') => {
+                if app.cursor_pos > 0 {
+                    let chars: Vec<char> = app.input.chars().collect();
+                    let mut pos = app.cursor_pos;
+                    while pos > 0 && chars[pos - 1].is_whitespace() {
+                        pos -= 1;
+                    }
+                    while pos > 0 && !chars[pos - 1].is_whitespace() {
+                        pos -= 1;
+                    }
+                    app.cursor_pos = pos;
+                }
+                return false;
+            }
+            // Alt+Right or Alt+f — jump to start of next word
+            KeyCode::Right | KeyCode::Char('f') => {
+                let chars: Vec<char> = app.input.chars().collect();
+                if app.cursor_pos < chars.len() {
+                    let mut pos = app.cursor_pos;
+                    while pos < chars.len() && !chars[pos].is_whitespace() {
+                        pos += 1;
+                    }
+                    while pos < chars.len() && chars[pos].is_whitespace() {
+                        pos += 1;
+                    }
+                    app.cursor_pos = pos;
+                }
+                return false;
+            }
+            // Alt+Delete or Alt+Backspace — delete previous word
+            KeyCode::Backspace | KeyCode::Delete | KeyCode::Char('\u{7f}') | KeyCode::Char('\u{8}') => {
+                if app.cursor_pos > 0 {
+                    let chars: Vec<char> = app.input.chars().collect();
+                    let mut pos = app.cursor_pos;
+                    while pos > 0 && chars[pos - 1].is_whitespace() {
+                        pos -= 1;
+                    }
+                    while pos > 0 && !chars[pos - 1].is_whitespace() {
+                        pos -= 1;
+                    }
+                    let start = char_to_byte(&app.input, pos);
+                    let end = char_to_byte(&app.input, app.cursor_pos);
+                    app.input.drain(start..end);
+                    app.cursor_pos = pos;
+                }
+                return false;
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
@@ -190,25 +263,41 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
                 app.dispatch_new();
             }
         }
+        KeyCode::Left => {
+            if app.cursor_pos > 0 {
+                app.cursor_pos -= 1;
+            }
+        }
         KeyCode::Right => {
-            if let Some(idx) = app.selected() {
-                if app.sessions[idx].state == SessionState::Initializing {
-                    app.status_message = format!("{} is still initializing...", app.sessions[idx].name);
-                } else {
-                    let (name, path) = (
-                        app.sessions[idx].name.clone(),
-                        app.sessions[idx].worktree_path.clone(),
-                    );
-                    attach_to_session(&name, &path, &mut app.status_message);
-                    app.needs_clear = true;
+            if app.cursor_pos < app.input.chars().count() {
+                app.cursor_pos += 1;
+            } else if app.input.trim().is_empty() {
+                // At end of empty input — attach to session
+                if let Some(idx) = app.selected() {
+                    if app.sessions[idx].state == SessionState::Initializing {
+                        app.status_message = format!("{} is still initializing...", app.sessions[idx].name);
+                    } else {
+                        let (name, path) = (
+                            app.sessions[idx].name.clone(),
+                            app.sessions[idx].worktree_path.clone(),
+                        );
+                        attach_to_session(&name, &path, &mut app.status_message);
+                        app.needs_clear = true;
+                    }
                 }
             }
         }
         KeyCode::Backspace => {
-            app.input.pop();
+            if app.cursor_pos > 0 {
+                let byte_idx = char_to_byte(&app.input, app.cursor_pos - 1);
+                app.input.remove(byte_idx);
+                app.cursor_pos -= 1;
+            }
         }
         KeyCode::Char(c) => {
-            app.input.push(c);
+            let byte_idx = char_to_byte(&app.input, app.cursor_pos);
+            app.input.insert(byte_idx, c);
+            app.cursor_pos += 1;
         }
         _ => {}
     }
@@ -321,4 +410,10 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
                 .title_bottom(ratatui::text::Line::from(status).style(Style::default().fg(Color::Yellow))),
         );
     f.render_widget(input, input_area);
+
+    // Show the terminal cursor inside the text input so the user can
+    // see where typed characters will appear.
+    let cursor_x = input_area.x + 1 + app.cursor_pos as u16;
+    let cursor_y = input_area.y + 1;
+    f.set_cursor_position((cursor_x, cursor_y));
 }
