@@ -1,8 +1,9 @@
-// Session management — each session is a pi process running in a worktree.
+// Session management — each session is a pi process running inside a tmux
+// session in a worktree. tmux gives us attach/detach for free.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -27,13 +28,10 @@ pub struct Session {
     pub created_at: u64,
     pub last_activity: u64,
     pub state: SessionState,
-    /// Serialized child process — we track if it's alive via try_wait.
-    #[serde(skip)]
-    pub child: Option<Child>,
 }
 
 impl Session {
-    pub fn new(name: String, prompt: String, worktree_path: String, child: Child) -> Self {
+    pub fn new(name: String, prompt: String, worktree_path: String) -> Self {
         let now = unix_now();
         Self {
             name,
@@ -42,34 +40,26 @@ impl Session {
             created_at: now,
             last_activity: now,
             state: SessionState::Working,
-            child: Some(child),
         }
     }
 
-    /// Refresh state by checking if the pi process is still alive.
+    /// Refresh state by checking if the tmux session is still alive.
     pub fn refresh_state(&mut self) {
-        if let Some(child) = &mut self.child {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    self.state = if status.success() {
-                        SessionState::Completed
-                    } else {
-                        SessionState::Failed
-                    };
-                }
-                Ok(None) => {
-                    // Still running — check if the process is waiting for input
-                    // by looking at recent activity in the worktree. For now,
-                    // mark as Working.
-                    self.state = SessionState::Working;
-                }
-                Err(_) => {
-                    self.state = SessionState::Failed;
-                }
-            }
-        } else {
-            // No child process — session was resumed from disk, not currently running.
-            self.state = SessionState::Idle;
+        let alive = Command::new("tmux")
+            .arg("has-session")
+            .arg("-t")
+            .arg(&self.name)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if alive {
+            self.state = SessionState::Working;
+        } else if self.state == SessionState::Working {
+            // tmux session ended — the process finished
+            self.state = SessionState::Completed;
         }
     }
 }
@@ -89,37 +79,56 @@ pub fn load_env() -> HashMap<String, String> {
     vars
 }
 
-pub fn spawn_pi(
-    name: &str,
-    worktree_path: &str,
-    initial_prompt: &str,
-) -> std::io::Result<Child> {
-    // Spawn pi in print mode with the initial prompt, in the worktree.
-    // The session is saved by name, so subsequent `pi -p --name <name>` calls
-    // continue the conversation.
-    //
-    // ALL stdio redirected to null so pi's output never leaks into the TUI.
-    // The session runs silently in the background; attach with Right arrow
-    // to see it interactively.
-    //
-    // Env vars are loaded from ~/.orchestra/env (written during setup)
-    // because SSH sessions don't have the secret env vars.
-    let env = load_env();
-    let mut cmd = Command::new("pi");
-    cmd.arg("-p")
-        .arg(initial_prompt)
-        .arg("--name")
+/// Spawn pi inside a detached tmux session, then send the initial prompt
+/// as keystrokes. The session persists in tmux — attach with `tmux attach`.
+pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::io::Result<()> {
+    // Source env vars inside the tmux session so pi can resolve $GLM_API_KEY etc.
+    let cmd_str = format!(
+        "set -a; source {ENV_FILE}; set +a; pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8"
+    );
+
+    let status = Command::new("tmux")
+        .arg("new-session")
+        .arg("-d")
+        .arg("-s")
         .arg(name)
-        .arg("--provider")
-        .arg("glm")
-        .arg("--model")
-        .arg("zai-org/GLM-5.2-FP8")
-        .current_dir(worktree_path)
-        .envs(&env)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd.spawn()
+        .arg("-c")
+        .arg(worktree_path)
+        .arg("bash")
+        .arg("-c")
+        .arg(&cmd_str)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    if !status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "tmux new-session failed",
+        ));
+    }
+
+    // Send the initial prompt as literal keystrokes, then Enter.
+    Command::new("tmux")
+        .arg("send-keys")
+        .arg("-t")
+        .arg(name)
+        .arg("-l")
+        .arg(initial_prompt)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    Command::new("tmux")
+        .arg("send-keys")
+        .arg("-t")
+        .arg(name)
+        .arg("Enter")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    Ok(())
 }
 
 pub fn load_sessions() -> Vec<Session> {
@@ -128,10 +137,7 @@ pub fn load_sessions() -> Vec<Session> {
         for entry in entries.flatten() {
             let path = entry.path().join("state.json");
             if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut sess) = serde_json::from_str::<Session>(&content) {
-                    // No live child process after restore — mark as idle.
-                    sess.child = None;
-                    sess.state = SessionState::Idle;
+                if let Ok(sess) = serde_json::from_str::<Session>(&content) {
                     sessions.push(sess);
                 }
             }
@@ -147,17 +153,7 @@ pub fn save_sessions(sessions: &[Session]) {
         let dir = PathBuf::from(SESSIONS_DIR).join(&sess.name);
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("state.json");
-        // Clone without the child handle (child is skipped in serde).
-        let to_save = Session {
-            child: None,
-            name: sess.name.clone(),
-            prompt: sess.prompt.clone(),
-            worktree_path: sess.worktree_path.clone(),
-            created_at: sess.created_at,
-            last_activity: sess.last_activity,
-            state: sess.state,
-        };
-        if let Ok(json) = serde_json::to_string_pretty(&to_save) {
+        if let Ok(json) = serde_json::to_string_pretty(sess) {
             std::fs::write(path, json).ok();
         }
     }

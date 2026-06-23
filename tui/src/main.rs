@@ -4,7 +4,7 @@
 //   Up/Down     — navigate session list
 //   Enter       — dispatch new session (if input non-empty) or attach to selected
 //   Right       — attach to selected session
-//   Left        — detach (on empty input)
+//   Ctrl+B D    — detach from attached session (tmux)
 //   q/Ctrl+C    — quit
 
 use std::io;
@@ -97,8 +97,8 @@ impl App {
         }
 
         match session::spawn_pi(&name, &worktree_path, &prompt) {
-            Ok(child) => {
-                let sess = Session::new(name.clone(), prompt.clone(), worktree_path, child);
+            Ok(()) => {
+                let sess = Session::new(name.clone(), prompt.clone(), worktree_path);
                 self.sessions.push(sess);
                 self.input.clear();
                 self.status_message = format!("Dispatched: {name}");
@@ -184,27 +184,23 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
     false
 }
 
-fn attach_to_session(name: &str, worktree_path: &str, status_message: &mut String) {
+fn attach_to_session(name: &str, _worktree_path: &str, status_message: &mut String) {
     disable_raw_mode().ok();
     execute!(io::stdout(), LeaveAlternateScreen).ok();
 
-    let env = session::load_env();
-    let status = Command::new("pi")
-        .arg("--name")
-        .arg(name)
-        .arg("--provider")
-        .arg("glm")
-        .arg("--model")
-        .arg("zai-org/GLM-5.2-FP8")
-        .current_dir(worktree_path)
-        .envs(&env)
-        .status();
+    let status = Command::new("tmux").arg("attach").arg("-t").arg(name).status();
 
     enable_raw_mode().ok();
     execute!(io::stdout(), EnterAlternateScreen).ok();
 
-    if let Err(e) = status {
-        *status_message = format!("pi attach failed: {e}");
+    match status {
+        Ok(s) if !s.success() => {
+            *status_message = format!("Session '{name}' not found or ended");
+        }
+        Err(e) => {
+            *status_message = format!("tmux attach failed: {e}");
+        }
+        _ => {}
     }
 }
 
