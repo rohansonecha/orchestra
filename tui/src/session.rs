@@ -158,10 +158,21 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
 
     let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
     // Start interactive pi in the foreground. A background subshell
-    // waits 3 seconds for pi's UI to render, touches the ready marker
-    // (so the TUI allows attach), then sends the prompt as keystrokes.
+    // polls the tmux pane until pi's UI is rendered (detected by the
+    // model quality string "medium" in the status bar), then touches
+    // the ready marker and sends the prompt as keystrokes.
     let cmd_str = format!(
-        "set -a; source {ENV_FILE}; set +a; (sleep 3; touch {ready_marker}; tmux send-keys -t {name} -l '{escaped}'; tmux send-keys -t {name} Enter) & pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
+        "set -a; source {ENV_FILE}; set +a; (
+            for i in $(seq 1 30); do
+                if tmux capture-pane -t {name} -p 2>/dev/null | grep -q 'medium'; then
+                    break
+                fi
+                sleep 0.5
+            done
+            touch {ready_marker}
+            tmux send-keys -t {name} -l '{escaped}'
+            tmux send-keys -t {name} Enter
+        ) & pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
     );
 
     // Set global tmux options BEFORE creating the session so the session
