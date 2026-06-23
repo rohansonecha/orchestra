@@ -4,7 +4,7 @@
 //   Up/Down     — navigate session list
 //   Enter       — dispatch new session (if input non-empty) or attach to selected
 //   Right       — attach to selected session
-//   Ctrl+B D    — detach from attached session (tmux)
+//   Left        — detach from session (inside tmux)
 //   q/Ctrl+C    — quit
 
 use std::io;

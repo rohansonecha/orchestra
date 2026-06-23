@@ -79,12 +79,19 @@ pub fn load_env() -> HashMap<String, String> {
     vars
 }
 
-/// Spawn pi inside a detached tmux session, then send the initial prompt
-/// as keystrokes. The session persists in tmux — attach with `tmux attach`.
+/// Spawn pi inside a detached tmux session. The initial prompt is run via
+/// `pi -p` (print mode) so it starts processing immediately on dispatch.
+/// After print mode finishes, `exec pi` starts interactive mode so the
+/// user can continue the conversation when they attach.
+///
+/// Left arrow is bound to detach-client so the user can return to the
+/// orchestra TUI by pressing Left.
 pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::io::Result<()> {
-    // Source env vars inside the tmux session so pi can resolve $GLM_API_KEY etc.
+    // Escape single quotes for bash — the only char that needs escaping
+    // inside single-quoted strings.
+    let escaped = initial_prompt.replace('\'', "'\\''");
     let cmd_str = format!(
-        "set -a; source {ENV_FILE}; set +a; pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8"
+        "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8; exec pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8"
     );
 
     let status = Command::new("tmux")
@@ -108,22 +115,22 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
         ));
     }
 
-    // Send the initial prompt as literal keystrokes, then Enter.
+    // Global tmux settings (idempotent — safe to run for every session).
+    // Left arrow detaches back to the orchestra TUI.
     Command::new("tmux")
-        .arg("send-keys")
-        .arg("-t")
-        .arg(name)
-        .arg("-l")
-        .arg(initial_prompt)
+        .arg("bind-key")
+        .arg("Left")
+        .arg("detach-client")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
 
+    // Enable extended-keys for proper Enter/modified key handling.
     Command::new("tmux")
-        .arg("send-keys")
-        .arg("-t")
-        .arg(name)
-        .arg("Enter")
+        .arg("set")
+        .arg("-g")
+        .arg("extended-keys")
+        .arg("on")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
