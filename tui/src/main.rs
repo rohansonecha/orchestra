@@ -160,12 +160,16 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
         KeyCode::Enter => {
             if app.input.trim().is_empty() {
                 if let Some(idx) = app.selected() {
-                    let (name, path) = (
-                        app.sessions[idx].name.clone(),
-                        app.sessions[idx].worktree_path.clone(),
-                    );
-                    attach_to_session(&name, &path, &mut app.status_message);
-                    app.needs_clear = true;
+                    if app.sessions[idx].state == SessionState::Initializing {
+                        app.status_message = format!("{} is still initializing...", app.sessions[idx].name);
+                    } else {
+                        let (name, path) = (
+                            app.sessions[idx].name.clone(),
+                            app.sessions[idx].worktree_path.clone(),
+                        );
+                        attach_to_session(&name, &path, &mut app.status_message);
+                        app.needs_clear = true;
+                    }
                 }
             } else {
                 app.dispatch_new();
@@ -173,12 +177,16 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
         }
         KeyCode::Right => {
             if let Some(idx) = app.selected() {
-                let (name, path) = (
-                    app.sessions[idx].name.clone(),
-                    app.sessions[idx].worktree_path.clone(),
-                );
-                attach_to_session(&name, &path, &mut app.status_message);
-                app.needs_clear = true;
+                if app.sessions[idx].state == SessionState::Initializing {
+                    app.status_message = format!("{} is still initializing...", app.sessions[idx].name);
+                } else {
+                    let (name, path) = (
+                        app.sessions[idx].name.clone(),
+                        app.sessions[idx].worktree_path.clone(),
+                    );
+                    attach_to_session(&name, &path, &mut app.status_message);
+                    app.needs_clear = true;
+                }
             }
         }
         KeyCode::Backspace => {
@@ -231,6 +239,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     );
     let items: Vec<ListItem> = app.sessions.iter().map(|s| {
         let icon = match s.state {
+            SessionState::Initializing => Span::styled("◐ ", Style::default().fg(Color::Blue)),
             SessionState::Working => Span::styled("● ", Style::default().fg(Color::Yellow)),
             SessionState::NeedsInput => Span::styled("● ", Style::default().fg(Color::Cyan)),
             SessionState::Idle => Span::styled("○ ", Style::default().fg(Color::DarkGray)),

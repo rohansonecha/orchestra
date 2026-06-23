@@ -14,6 +14,7 @@ const SKILLS_DIR: &str = "/home/sky/.orchestra/skills";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
+    Initializing,
     Working,
     NeedsInput,
     Idle,
@@ -40,11 +41,23 @@ impl Session {
             worktree_path,
             created_at: now,
             last_activity: now,
-            state: SessionState::Working,
+            state: SessionState::Initializing,
         }
     }
 
-    /// Refresh state by checking if the tmux session is still alive.
+    /// Path to the readiness marker file. The tmux session touches this
+    /// file when print mode finishes and interactive pi starts.
+    fn ready_path(&self) -> String {
+        format!("{SESSIONS_DIR}/{}.ready", self.name)
+    }
+
+    /// Check if the session is ready to attach (interactive pi is running).
+    pub fn is_ready(&self) -> bool {
+        std::path::Path::new(&self.ready_path()).exists()
+    }
+
+    /// Refresh state by checking if the tmux session is still alive and
+    /// whether the readiness marker exists.
     pub fn refresh_state(&mut self) {
         let alive = Command::new("tmux")
             .arg("has-session")
@@ -56,11 +69,19 @@ impl Session {
             .map(|s| s.success())
             .unwrap_or(false);
 
-        if alive {
-            self.state = SessionState::Working;
-        } else if self.state == SessionState::Working {
+        if !alive {
             // tmux session ended — the process finished
-            self.state = SessionState::Completed;
+            if self.state != SessionState::Failed {
+                self.state = SessionState::Completed;
+            }
+            return;
+        }
+
+        // tmux is alive — check if interactive pi has started yet.
+        if self.is_ready() {
+            self.state = SessionState::Working;
+        } else {
+            self.state = SessionState::Initializing;
         }
     }
 }
@@ -132,8 +153,9 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
         None => String::new(),
     };
 
+    let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
     let cmd_str = format!(
-        "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
+        "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; touch {ready_marker}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
     );
 
     // Set global tmux options BEFORE creating the session so the session
