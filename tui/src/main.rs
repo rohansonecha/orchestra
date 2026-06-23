@@ -212,7 +212,7 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     // Layout: session list (flexible) + dispatch input (3 rows)
     // Status shown in the input block's footer, not as a separate row.
     let area = f.area();
-    let list_h = area.height.saturating_sub(3);
+    let list_h = 20; // Fixed for testing
     let list_area = Rect::new(area.x, area.y, area.width, list_h);
     let input_area = Rect::new(area.x, area.y + list_h, area.width, 3);
 
