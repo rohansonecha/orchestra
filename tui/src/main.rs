@@ -223,7 +223,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
     // Session list
     let title = format!(
-        " Sessions ({}active) — ↑↓ navigate, → attach, Enter dispatch ",
+        " Sessions ({} active) — ↑↓ navigate, → attach, Enter dispatch ",
         app.sessions
             .iter()
             .filter(|s| s.state == SessionState::Working)
