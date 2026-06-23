@@ -81,17 +81,20 @@ pub fn load_env() -> HashMap<String, String> {
 
 /// Spawn pi inside a detached tmux session. The initial prompt is run via
 /// `pi -p` (print mode) so it starts processing immediately on dispatch.
-/// After print mode finishes, `exec pi` starts interactive mode so the
-/// user can continue the conversation when they attach.
+/// After print mode finishes, interactive pi starts in a restart loop —
+/// if pi exits (crash, Ctrl+C, etc.), it restarts so the session stays
+/// attachable. pi persists conversation history by --name, so restarts
+/// resume the existing conversation.
 ///
-/// Left arrow is bound to detach-client so the user can return to the
-/// orchestra TUI by pressing Left.
+/// Left arrow and Ctrl+C are bound to detach-client so the user can
+/// return to the orchestra TUI without killing pi. Use Escape to
+/// interrupt pi operations.
 pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::io::Result<()> {
     // Escape single quotes for bash — the only char that needs escaping
     // inside single-quoted strings.
     let escaped = initial_prompt.replace('\'', "'\\''");
     let cmd_str = format!(
-        "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8; exec pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8"
+        "set -a; source {ENV_FILE}; set +a; pi -p '{escaped}' --name {name} --provider glm --model zai-org/GLM-5.2-FP8; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8; sleep 1; done"
     );
 
     let status = Command::new("tmux")
@@ -116,12 +119,27 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
     }
 
     // Global tmux settings (idempotent — safe to run for every session).
-    // Left arrow detaches back to the orchestra TUI (root table = no prefix needed).
+    // Left arrow and Ctrl+C detach back to the orchestra TUI (root table
+    // = no prefix needed). Ctrl+C would otherwise exit pi and kill the
+    // session.
+    for key in ["Left", "C-c"] {
+        Command::new("tmux")
+            .arg("bind-key")
+            .arg("-n")
+            .arg(key)
+            .arg("detach-client")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+    }
+
+    // Keep pane alive even if all processes exit, so the user can see
+    // what happened instead of getting a dead session.
     Command::new("tmux")
-        .arg("bind-key")
-        .arg("-n")
-        .arg("Left")
-        .arg("detach-client")
+        .arg("set")
+        .arg("-g")
+        .arg("remain-on-exit")
+        .arg("on")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
