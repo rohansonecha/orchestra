@@ -124,7 +124,7 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::new();
 
     loop {
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
@@ -208,17 +208,11 @@ fn attach_to_session(name: &str, worktree_path: &str, status_message: &mut Strin
     }
 }
 
-fn ui(f: &mut ratatui::Frame, app: &App) {
-    // Layout: session list (flexible) + dispatch input (3 rows)
-    // Status shown in the input block's footer, not as a separate row.
-    let area = f.area();
-    let list_h = area.height.saturating_sub(3);
-    let list_area = Rect::new(area.x, area.y, area.width, list_h);
-    let input_area = Rect::new(area.x, area.y + list_h, area.width, 3);
-
+fn ui(f: &mut ratatui::Frame, app: &mut App) {
     // Some terminals reserve the last row for the cursor, so the effective
-    // renderable height is area.height - 1. Use that for all calculations.
-    let area = Rect::new(f.area().x, f.area().y, f.area().width, f.area().height.saturating_sub(1));
+    // renderable height is area.height - 1.
+    let area = f.area();
+    let area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1));
     let list_h = area.height.saturating_sub(3);
     let list_area = Rect::new(area.x, area.y, area.width, list_h);
     let input_area = Rect::new(area.x, area.y + list_h, area.width, 3);
@@ -231,7 +225,7 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
             .filter(|s| s.state == SessionState::Working)
             .count()
     );
-    let lines: Vec<Line> = app.sessions.iter().map(|s| {
+    let items: Vec<ListItem> = app.sessions.iter().map(|s| {
         let icon = match s.state {
             SessionState::Working => Span::styled("● ", Style::default().fg(Color::Yellow)),
             SessionState::NeedsInput => Span::styled("● ", Style::default().fg(Color::Cyan)),
@@ -244,11 +238,12 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
             Style::default().add_modifier(Modifier::BOLD),
         );
         let prompt = Span::raw(s.prompt.chars().take(60).collect::<String>());
-        Line::from(vec![icon, name, Span::raw(" "), prompt])
+        ListItem::new(Line::from(vec![icon, name, Span::raw(" "), prompt]))
     }).collect();
-    let list_widget = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(list_widget, list_area);
+    let list_widget = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(list_widget, list_area, &mut app.list_state);
 
     // Dispatch input with status in the footer
     let input_title = if app.input.is_empty() {
