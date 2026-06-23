@@ -116,9 +116,10 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
     }
 
     // Global tmux settings (idempotent — safe to run for every session).
-    // Left arrow detaches back to the orchestra TUI.
+    // Left arrow detaches back to the orchestra TUI (root table = no prefix needed).
     Command::new("tmux")
         .arg("bind-key")
+        .arg("-n")
         .arg("Left")
         .arg("detach-client")
         .stdout(Stdio::null())
