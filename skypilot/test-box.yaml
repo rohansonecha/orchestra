@@ -52,6 +52,13 @@ setup: |
   # --- Install pi coding agent ---
   sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
+  # --- Patch pi: remove italic from thinking text ---
+  PI_MSG_JS=$(find /usr/lib/node_modules/@earendil-works/pi-coding-agent -path '*/components/assistant-message.js' | head -1)
+  if [ -n "$PI_MSG_JS" ]; then
+    sudo sed -i 's/italic: true,/italic: false,/' "$PI_MSG_JS"
+    sudo sed -i 's/theme\.italic(theme\.fg("thinkingText"/theme.fg("thinkingText"/' "$PI_MSG_JS"
+  fi
+
   # --- Pi settings (theme) ---
   echo '{"theme":"orchestra"}' > ~/.pi/agent/settings.json
 

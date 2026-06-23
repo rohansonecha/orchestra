@@ -75,6 +75,16 @@ setup: |
   # --- Install pi coding agent ---
   sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
+  # --- Patch pi: remove italic from thinking text ---
+  # Pi hardcodes italic styling on thinking text, which makes it look like
+  # highlighted text rather than plain grey. This patch sets italic: false
+  # so thinking text renders as plain grey (matching the status bar color).
+  PI_MSG_JS=$(find /usr/lib/node_modules/@earendil-works/pi-coding-agent -path '*/components/assistant-message.js' | head -1)
+  if [ -n "$PI_MSG_JS" ]; then
+    sudo sed -i 's/italic: true,/italic: false,/' "$PI_MSG_JS"
+    sudo sed -i 's/theme\.italic(theme\.fg("thinkingText"/theme.fg("thinkingText"/' "$PI_MSG_JS"
+  fi
+
   # --- Pi settings (theme) ---
   # The orchestra theme brightens thinking text, tool output, and muted text
   # from the default dark theme's #808080 (index 244, hard to read) to
