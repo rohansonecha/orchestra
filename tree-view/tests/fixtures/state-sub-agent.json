@@ -1,0 +1,8 @@
+{
+  "id": "agent-research-box",
+  "state": "idle",
+  "config": {},
+  "openclaw_sessions": [],
+  "pi_sessions": ["lit-review-11"],
+  "active_task_ids": []
+}

@@ -1,0 +1,8 @@
+{
+  "id": "agent-main-box",
+  "state": "working",
+  "config": {},
+  "openclaw_sessions": ["oc-task-1"],
+  "pi_sessions": ["fix-login-8824", "write-tests-44"],
+  "active_task_ids": []
+}

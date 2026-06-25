@@ -1,0 +1,7 @@
+{
+  "clusters": [
+    {"name": "agent-main-box", "status": "UP", "host": "10.0.0.1", "resources": "4CPU"},
+    {"name": "agent-research-box", "status": "UP", "host": "10.0.0.2", "resources": "4CPU"},
+    {"name": "my-test-box", "status": "UP", "host": "10.0.0.3", "resources": "2CPU"}
+  ]
+}
