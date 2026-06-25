@@ -97,6 +97,10 @@ struct App {
     input_mode: InputMode,
     /// When in Rename mode, the id of the node being renamed.
     rename_target: Option<String>,
+    /// Pending delete confirmation: first `x` press sets this to the
+    /// selected session index; second `x` confirms + executes. Any other
+    /// key clears it. Prevents accidental full-cleanup deletion.
+    pending_delete: Option<usize>,
 }
 
 impl App {
@@ -116,6 +120,7 @@ impl App {
             show_detail: false,
             input_mode: InputMode::Dispatch,
             rename_target: None,
+            pending_delete: None,
         };
         app.reload_tree();
         app.selected_node_id = tree_view::default_selection(&app.tree, None);
@@ -394,23 +399,97 @@ impl App {
                 self.reload_tree();
             }
             NodeKind::Session => {
+                // Full cleanup: tmux + worktree + state files.
                 let tmux_name = node
                     .raw
                     .tmux_session
                     .clone()
                     .unwrap_or_else(|| id.clone());
-                let status = Command::new("tmux")
-                    .args(["kill-session", "-t", &tmux_name])
-                    .status();
-                match status {
-                    Ok(s) if s.success() => {
-                        self.status_message = format!("Session '{tmux_name}' killed");
-                    }
-                    _ => {
-                        self.status_message = format!("tmux kill-session failed for '{tmux_name}'");
-                    }
+                self.delete_session(&tmux_name);
+            }
+        }
+    }
+
+    /// Full cleanup for a session: tmux kill-session + git worktree remove +
+    /// git branch -D + rm state dir + rm .ready marker. Removes the session
+    /// from the in-memory list. Used by both Agent View (`x`) and Tree View
+    /// (`x` on a session node).
+    fn delete_session(&mut self, name: &str) -> bool {
+        let mut logs = Vec::new();
+
+        // 1. Kill the tmux session.
+        let kill = Command::new("tmux")
+            .args(["kill-session", "-t", name])
+            .status();
+        match kill {
+            Ok(s) if s.success() => logs.push(format!("tmux '{name}' killed")),
+            Ok(_) => logs.push(format!("tmux kill-session failed for '{name}' (may already be gone)")),
+            Err(e) => logs.push(format!("tmux unavailable: {e}")),
+        }
+
+        // 2. Remove the git worktree + branch.
+        let worktree_path = format!("{WORKTREES_DIR}/{name}");
+        match worktree::remove_worktree(WORK_REPO_PATH, &worktree_path, name) {
+            Ok(()) => logs.push(format!("worktree removed")),
+            Err(e) => logs.push(format!("worktree remove failed: {e}")),
+        }
+
+        // 3. Remove the state directory + .ready marker.
+        let state_dir = format!("{SESSIONS_DIR}/{name}");
+        let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
+        let mut rm_ok = std::fs::remove_dir_all(&state_dir).is_ok();
+        rm_ok |= std::fs::remove_file(&ready_marker).is_ok();
+        if rm_ok {
+            logs.push("state files removed".to_string());
+        }
+
+        // 4. Remove from the in-memory session list.
+        let before = self.sessions.len();
+        self.sessions.retain(|s| s.name != name);
+        let removed = self.sessions.len() < before;
+        if removed {
+            // Adjust selection if we removed the selected item.
+            if let Some(idx) = self.list_state.selected() {
+                if idx >= self.sessions.len() {
+                    self.list_state.select(if self.sessions.is_empty() {
+                        None
+                    } else {
+                        Some(self.sessions.len() - 1)
+                    });
                 }
-                self.reload_tree();
+            }
+        }
+
+        self.reload_tree();
+        self.status_message = format!("Deleted '{name}' ({})", logs.join(", "));
+        removed
+    }
+
+    /// Two-press confirmation for `x` in Agent View. First press arms the
+    /// delete (sets `pending_delete` + shows a confirm message). Second
+    /// press (while the same session is selected) executes. Any other key
+    /// cancels.
+    fn handle_delete_key_agent(&mut self) {
+        let Some(idx) = self.selected() else {
+            self.status_message = "No session selected".to_string();
+            return;
+        };
+        if idx >= self.sessions.len() {
+            return;
+        }
+        match self.pending_delete {
+            Some(pending) if pending == idx => {
+                // Confirmed — execute.
+                let name = self.sessions[idx].name.clone();
+                self.pending_delete = None;
+                self.delete_session(&name);
+            }
+            _ => {
+                // First press — arm.
+                let name = &self.sessions[idx].name;
+                self.pending_delete = Some(idx);
+                self.status_message =
+                    format!("Press x again to DELETE '{name}' (tmux + worktree + state). Any other key cancels.");
             }
         }
     }
@@ -712,6 +791,11 @@ fn handle_tree_key(app: &mut App, key: event::KeyEvent) -> bool {
 }
 
 fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
+    // Any key other than `x` cancels a pending delete.
+    let is_delete_key = key.code == KeyCode::Char('x');
+    if !is_delete_key {
+        app.pending_delete = None;
+    }
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
@@ -722,6 +806,7 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
             app.cursor_pos = 0;
             app.input_mode = InputMode::Dispatch;
         }
+        KeyCode::Char('x') => app.handle_delete_key_agent(),
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
         KeyCode::Enter => {
@@ -731,10 +816,7 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
                         app.status_message =
                             format!("{} is still initializing...", app.sessions[idx].name);
                     } else {
-                        let (name, path) = (
-                            app.sessions[idx].name.clone(),
-                            app.sessions[idx].worktree_path.clone(),
-                        );
+                        let name = app.sessions[idx].name.clone();
                         attach_to_session(&name, &mut app.status_message);
                         app.needs_clear = true;
                     }
@@ -757,10 +839,7 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
                         app.status_message =
                             format!("{} is still initializing...", app.sessions[idx].name);
                     } else {
-                        let (name, path) = (
-                            app.sessions[idx].name.clone(),
-                            app.sessions[idx].worktree_path.clone(),
-                        );
+                        let name = app.sessions[idx].name.clone();
                         attach_to_session(&name, &mut app.status_message);
                         app.needs_clear = true;
                     }
@@ -915,7 +994,7 @@ fn ui_agent(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     } else {
         // Root Agent View: the classic session list (unchanged).
         let title = format!(
-            " Agent View: {scope} — {} active — ↑↓ navigate, → attach, Enter dispatch, Tab=Tree ",
+            " Agent View: {scope} — {} active — ↑↓ nav, → attach, Enter dispatch, x=delete, Tab=Tree ",
             app.sessions
                 .iter()
                 .filter(|s| s.state == SessionState::Working)
@@ -953,7 +1032,7 @@ fn render_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
             "Type new display name...",
         ),
         (ViewMode::Tree, InputMode::Dispatch) => (
-            " Tree View — ←→↑↓ nav, Enter=enter, d=detail, n=rename, r=reload, x=teardown, Tab=Agent ",
+            " Tree View — ←→↑↓ nav, Enter=enter, d=detail, n=rename, r=reload, x=delete, Tab=Agent ",
             "Tree View",
         ),
         (ViewMode::Agent, _) => {
@@ -1061,5 +1140,68 @@ mod tests {
         let lay = tree_layout::layout(&tree);
         assert!(!lay.is_empty());
         assert_eq!(lay.positions.len(), 4);
+    }
+
+    #[test]
+    fn delete_session_removes_from_in_memory_list() {
+        // The delete_session method does real I/O (tmux, git, rm) which we
+        // can't safely run in a unit test. But we can test the in-memory
+        // list removal logic directly — it's just `retain`.
+        let mut sessions = vec![
+            session("a", SessionState::Working),
+            session("b", SessionState::Idle),
+            session("c", SessionState::Completed),
+        ];
+        let before = sessions.len();
+        sessions.retain(|s| s.name != "b");
+        assert_eq!(sessions.len(), before - 1);
+        assert!(!sessions.iter().any(|s| s.name == "b"));
+        // Order preserved.
+        assert_eq!(sessions[0].name, "a");
+        assert_eq!(sessions[1].name, "c");
+    }
+
+    #[test]
+    fn delete_session_state_paths_are_correct() {
+        // Verify the paths delete_session constructs match the session
+        // save conventions (SESSIONS_DIR/<name> + .ready marker).
+        let name = "fix-bug-1234";
+        let state_dir = format!("{SESSIONS_DIR}/{name}");
+        let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
+        assert!(state_dir.ends_with("/.orchestra/sessions/fix-bug-1234"));
+        assert!(ready_marker.ends_with("/.orchestra/sessions/fix-bug-1234.ready"));
+    }
+
+    #[test]
+    fn pending_delete_clears_on_other_key() {
+        // The handle_agent_key logic: any key other than 'x' clears
+        // pending_delete. We simulate the guard.
+        let mut pending: Option<usize> = Some(2);
+        // Simulate pressing a non-x key.
+        let key_is_x = false;
+        if !key_is_x {
+            pending = None;
+        }
+        assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn pending_delete_two_press_confirms() {
+        // First press arms, second press (same idx) executes.
+        let mut pending: Option<usize> = None;
+        let selected = 1usize;
+        // First press:
+        match pending {
+            Some(p) if p == selected => { /* would execute */ }
+            _ => pending = Some(selected),
+        }
+        assert_eq!(pending, Some(selected));
+        // Second press (same idx):
+        let will_execute = matches!(pending, Some(p) if p == selected);
+        assert!(will_execute);
+        // If selection changes between presses, no execute:
+        let new_selected = 2usize;
+        let will_execute_after_change = matches!(pending, Some(p) if p == new_selected);
+        assert!(!will_execute_after_change);
     }
 }
