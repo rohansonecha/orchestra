@@ -26,6 +26,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Terminal;
 
 mod session;
+mod tree_layout;
+mod tree_store;
 mod worktree;
 
 use session::{Session, SessionState};

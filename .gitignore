@@ -13,3 +13,6 @@ __pycache__/
 *.log
 .DS_Store
 .env
+
+# Rust build artifacts
+target/
