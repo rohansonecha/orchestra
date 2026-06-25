@@ -224,6 +224,14 @@ pub fn load_sessions() -> Vec<Session> {
             let path = entry.path().join("state.json");
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(sess) = serde_json::from_str::<Session>(&content) {
+                    // Skip sessions whose tmux is dead — their state files
+                    // are stale. Clean up the state dir + .ready marker so
+                    // they don't accumulate. This prevents the TUI from
+                    // showing sessions that can't be attached to.
+                    if !tmux_alive(&sess.name) {
+                        remove_session_state(&sess.name);
+                        continue;
+                    }
                     sessions.push(sess);
                 }
             }
@@ -236,8 +244,36 @@ pub fn load_sessions() -> Vec<Session> {
 
 pub fn save_sessions(sessions: &[Session]) {
     for sess in sessions {
+        // Don't re-save sessions whose tmux is dead — that recreates stale
+        // state files and causes the "ghost sessions" problem where the
+        // TUI shows sessions that can't be attached to.
+        if sess.state == SessionState::Completed || sess.state == SessionState::Failed {
+            remove_session_state(&sess.name);
+            continue;
+        }
         save_session(sess);
     }
+}
+
+/// Check if a tmux session is alive.
+fn tmux_alive(name: &str) -> bool {
+    Command::new("tmux")
+        .arg("has-session")
+        .arg("-t")
+        .arg(name)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Remove a session's state directory + .ready marker from disk.
+fn remove_session_state(name: &str) {
+    let dir = PathBuf::from(SESSIONS_DIR).join(name);
+    let ready = PathBuf::from(SESSIONS_DIR).join(format!("{name}.ready"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&ready);
 }
 
 /// Save a single session's state to disk. Called immediately after
