@@ -175,6 +175,19 @@ setup: |
   }
   openclaw daemon start || true
 
+  # --- Tree View: state collector + A2A bridge (Design §4) ---
+  # The collector populates ~/.orchestra/tree/ (the tree store the TUI reads)
+  # by scraping tmux + OpenClaw sessions every 30s + sky status every 60s.
+  # The bridge presents the A2A face on :8080 (for sub-agent communication).
+  # Both are stdlib-only Python — no pip install needed.
+  mkdir -p ~/.orchestra/tree
+  nohup python3 ~/orchestra/tree-view/orchestra-collector.py \
+    --store-dir ~/.orchestra/tree --port 7777 \
+    > ~/.orchestra/collector.log 2>&1 &
+  nohup python3 ~/orchestra/tree-view/openclaw-bridge.py \
+    --port 8080 \
+    > ~/.orchestra/bridge.log 2>&1 &
+
 run: |
   # Keep the box alive. The OpenClaw gateway runs as a systemd service.
   echo "Main box ready. OpenClaw gateway should be running."

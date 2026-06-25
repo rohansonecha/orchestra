@@ -24,6 +24,18 @@ echo "--- Upgrade Safety ---"
 bash "$SCRIPT_DIR/upgrade.sh"
 echo ""
 
+echo "--- Tree View: Rust unit tests ---"
+cd ~/orchestra/tui && source ~/.cargo/env && cargo test --quiet 2>&1 | tail -5
+echo ""
+
+echo "--- Tree View: collector Python tests ---"
+cd ~/orchestra/tree-view && python3 tests/test_collector.py 2>&1 | tail -5
+echo ""
+
+echo "--- Tree View: gen-yaml Python tests ---"
+python3 tests/test_gen_yaml.py 2>&1 | tail -5
+echo ""
+
 echo "============================================"
 echo "  All tests passed!"
 echo "============================================"
