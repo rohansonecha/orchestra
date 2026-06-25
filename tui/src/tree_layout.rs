@@ -347,7 +347,7 @@ mod tests {
         ]);
         let l = layout(&tree);
         let screen = to_screen(&l, 80, 24, 20);
-        let (rc, rr) = screen.cells["root"];
+        let (rc, _rr) = screen.cells["root"];
         let (ac, ar) = screen.cells["a"];
         let (bc, br) = screen.cells["b"];
         // Root is at depth 0, children at depth 1 → children are to the right.

@@ -28,6 +28,7 @@ use ratatui::Terminal;
 mod session;
 mod tree_layout;
 mod tree_store;
+mod tree_view;
 mod worktree;
 
 use session::{Session, SessionState};
