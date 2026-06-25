@@ -1,6 +1,6 @@
 // tree_store.rs — Read-only client for the centralized tree state store.
 //
-// The store lives on disk at ~/.orchestra/tree/:
+// The store lives on disk at ~/.orchestra/tree/::
 //
 //     index.json              { root_id, version, updated_at }
 //     nodes/<id>.json         one Node record per file
@@ -29,6 +29,7 @@ pub const STALE_THRESHOLD_SECS: u64 = 90;
 /// Schema version of the on-disk node record. Bump when the wire format
 /// changes in a backwards-incompatible way. Additive changes (new optional
 /// fields) do NOT require a bump — serde ignores unknown fields.
+#[allow(dead_code)]
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// `index.json` — points at the root node and records the store version.
@@ -212,6 +213,7 @@ impl TreeStore {
     }
 
     /// Open a store at an explicit path (used by tests + the `--store` flag).
+    #[allow(dead_code)]
     pub fn open(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
     }
@@ -229,6 +231,7 @@ impl TreeStore {
     }
 
     /// Load a single node by id. Returns `None` if missing or unparseable.
+    #[allow(dead_code)]
     pub fn load_node(&self, id: &str) -> Option<Node> {
         let path = self.dir.join("nodes").join(format!("{id}.json"));
         let content = std::fs::read_to_string(&path).ok()?;

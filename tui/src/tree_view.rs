@@ -12,8 +12,6 @@
 // inspectable in tests without a real terminal. The renderer owns no
 // state — it's a pure function of (tree, layout, selection).
 
-use std::collections::HashMap;
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -401,6 +399,7 @@ pub fn nearest_by_y(tree: &Tree, candidates: &[String], id: &str) -> Option<Stri
 mod tests {
     use super::*;
     use crate::tree_store::{Node, NodeKind, NodeState, NodeView};
+    use std::collections::HashMap;
 
     fn buf(w: u16, h: u16) -> Buffer {
         Buffer::empty(Rect::new(0, 0, w, h))

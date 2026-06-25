@@ -123,6 +123,7 @@ fn walk(tree: &Tree, id: &str, depth: usize, state: &mut WalkState) -> f64 {
 #[derive(Debug, Clone)]
 pub struct ScreenLayout {
     pub cells: HashMap<String, (u16, u16)>,
+    #[allow(dead_code)]
     pub max_depth: usize,
 }
 
@@ -192,6 +193,7 @@ pub fn connectors(tree: &Tree, screen: &ScreenLayout) -> Vec<Connector> {
 }
 
 /// Helper: is this node an agent (vs session)? Looks up the tree.
+#[allow(dead_code)]
 pub fn is_agent(tree: &Tree, id: &str) -> bool {
     tree.get(id).map(|v| v.raw.kind == NodeKind::Agent).unwrap_or(false)
 }

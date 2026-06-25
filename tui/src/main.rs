@@ -693,13 +693,13 @@ fn handle_rename_key(app: &mut App, key: event::KeyEvent) -> bool {
                 app.cursor_pos += 1;
             }
         }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.cancel_rename();
+        }
         KeyCode::Char(c) => {
             let byte_idx = char_to_byte(&app.input, app.cursor_pos);
             app.input.insert(byte_idx, c);
             app.cursor_pos += 1;
-        }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.cancel_rename();
         }
         _ => {}
     }

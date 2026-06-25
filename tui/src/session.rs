@@ -1,7 +1,6 @@
 // Session management — each session is a pi process running inside a tmux
 // session in a worktree. tmux gives us attach/detach for free.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -113,21 +112,6 @@ fn load_skills_prompt() -> Option<String> {
     let path = format!("/tmp/orchestra-skills-{unix}.md", unix = unix_now());
     std::fs::write(&path, &content).ok()?;
     Some(path)
-}
-
-/// Load env vars from ~/.orchestra/env (written during main-box setup).
-/// Secrets are only available during setup scripts, not SSH sessions.
-/// The TUI loads them here so pi can resolve $GLM_API_KEY etc.
-pub fn load_env() -> HashMap<String, String> {
-    let mut vars = HashMap::new();
-    if let Ok(content) = std::fs::read_to_string(ENV_FILE) {
-        for line in content.lines() {
-            if let Some((key, value)) = line.split_once('=') {
-                vars.insert(key.trim().to_string(), value.trim().to_string());
-            }
-        }
-    }
-    vars
 }
 
 /// Spawn pi inside a detached tmux session. Interactive pi starts
