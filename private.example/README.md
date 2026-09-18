@@ -13,11 +13,14 @@ cp ../private.example/env.example env
 ```
 
 ### `private/models.json`
-Pi provider config with real vLLM endpoint. Copy from `pi/models.json.example`:
+Pi provider config with your real model endpoint. Copy from `pi/models.json.example`:
 ```bash
 cp ../pi/models.json.example models.json
-# Replace YOUR_VLLM_HOST with the real host
+# Set baseUrl to your provider and list the models you want
 ```
+
+List as many models under the provider as you like — sessions switch
+between them with pi's `/model` command.
 
 ### `private/agents/work.md`
 Work agent recipe with real repos, conventions, tooling. Copy from `pi/agents/work.md`:
@@ -30,5 +33,6 @@ cp ../pi/agents/work.md agents/work.md
 
 - Never commit files in `private/` — `.gitignore` excludes the entire directory.
 - Rotate tokens if they are ever exposed (e.g. shared in chat).
-- The `GLM_API_KEY` is referenced by `!printf %s $GLM_API_KEY` in models.json
-  and resolved at runtime from the environment — the key itself is not in the file.
+- The `ORCHESTRA_API_KEY` is referenced by `!printf %s $ORCHESTRA_API_KEY` in
+  models.json and resolved at runtime from the environment — the key itself is
+  not in the file. (`GLM_API_KEY` is still accepted as a legacy fallback.)

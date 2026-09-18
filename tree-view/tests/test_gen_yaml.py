@@ -56,7 +56,7 @@ class BuildVarsTest(unittest.TestCase):
         v = gen.build_vars("research-box", {}, "http://parent:8080/", "http://collector:7777")
         self.assertEqual(v["AGENT_NAME"], "research-box")
         self.assertEqual(v["AGENT_ID"], "agent-research-box")
-        self.assertEqual(v["MODEL"], "zai-org/GLM-5.2-FP8")
+        self.assertEqual(v["MODEL"], "")  # empty = pi default model
         self.assertEqual(v["CPUS"], 4)
         self.assertEqual(v["GPU"], 0)
         self.assertEqual(v["BRIDGE_PORT"], 8080)
@@ -96,7 +96,7 @@ class TemplateRenderTest(unittest.TestCase):
         self.assertNotIn("{{/", out)
         # Key substitutions present.
         self.assertIn("agent-research-box", out)
-        self.assertIn("zai-org/GLM-5.2-FP8", out)
+        self.assertIn("ORCHESTRA_MODEL", out)
         self.assertIn(v["AGENT_TOKEN"], out)
 
     def test_gpu_line_present_when_gpu_nonzero(self):

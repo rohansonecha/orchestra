@@ -143,12 +143,19 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
     let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
     // Start interactive pi in the foreground. A background subshell
     // polls the tmux pane until pi's UI is rendered (detected by the
-    // model quality string "medium" in the status bar), then touches
-    // the ready marker and sends the prompt as keystrokes.
+    // context-usage string "%/<ctx>" or "?/<ctx>" in the footer —
+    // model-agnostic), then touches the ready marker and sends the
+    // prompt as keystrokes.
+    //
+    // Model selection: ORCHESTRA_PROVIDER / ORCHESTRA_MODEL (from
+    // ~/.orchestra/env) optionally pin the INITIAL model only. The
+    // restart loop passes no model flags, so a /model switch inside
+    // the session survives pi restarts. With no env vars set, pi
+    // uses its default model from models.json — same as normal pi.
     let cmd_str = format!(
         "set -a; source {ENV_FILE}; set +a; (
             for i in $(seq 1 30); do
-                if tmux capture-pane -t {name} -p 2>/dev/null | grep -q 'medium'; then
+                if tmux capture-pane -t {name} -p 2>/dev/null | grep -qE '[%?]/'; then
                     break
                 fi
                 sleep 0.5
@@ -156,7 +163,11 @@ pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::i
             touch {ready_marker}
             tmux send-keys -t {name} -l '{escaped}'
             tmux send-keys -t {name} Enter
-        ) & pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; while true; do pi --name {name} --provider glm --model zai-org/GLM-5.2-FP8 {skills_flag}; sleep 1; done"
+        ) &
+        PI_MODEL_FLAGS=\"\"
+        [ -n \"${{ORCHESTRA_PROVIDER:-}}\" ] && PI_MODEL_FLAGS=\"$PI_MODEL_FLAGS --provider $ORCHESTRA_PROVIDER\"
+        [ -n \"${{ORCHESTRA_MODEL:-}}\" ] && PI_MODEL_FLAGS=\"$PI_MODEL_FLAGS --model $ORCHESTRA_MODEL\"
+        pi --name {name} $PI_MODEL_FLAGS {skills_flag}; while true; do pi --name {name} {skills_flag}; sleep 1; done"
     );
 
     // Write ~/.tmux.conf if it doesn't exist. The tmux server reads this

@@ -3,10 +3,10 @@
     "defaults": {
       "workspace": "/home/sky/.openclaw/workspace",
       "models": {
-        "vllm/zai-org/GLM-5.2-FP8": {}
+        "vllm/your-model-id": {}
       },
       "model": {
-        "primary": "vllm/zai-org/GLM-5.2-FP8"
+        "primary": "vllm/your-model-id"
       }
     },
     "list": [
@@ -81,13 +81,13 @@
     "mode": "merge",
     "providers": {
       "vllm": {
-        "baseUrl": "http://YOUR_VLLM_HOST/default/glm-5-2/v1",
+        "baseUrl": "https://your-provider.example.com/v1",
         "api": "openai-completions",
-        "apiKey": "!printf %s $GLM_API_KEY",
+        "apiKey": "!printf %s ${ORCHESTRA_API_KEY:-$GLM_API_KEY}",
         "models": [
           {
-            "id": "zai-org/GLM-5.2-FP8",
-            "name": "zai-org/GLM-5.2-FP8",
+            "id": "your-model-id",
+            "name": "your-model-id",
             "reasoning": false,
             "input": [
               "text"

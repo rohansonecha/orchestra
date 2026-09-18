@@ -587,10 +587,10 @@ mod tests {
             "state": "idle",
             "created_at": 0,
             "last_pulled": 0,
-            "config": { "model": "glm", "max_subagents": 5, "custom_flag": true }
+            "config": { "model": "my-model", "max_subagents": 5, "custom_flag": true }
         }"#;
         let n: Node = serde_json::from_str(json).unwrap();
-        assert_eq!(n.config.model.as_deref(), Some("glm"));
+        assert_eq!(n.config.model.as_deref(), Some("my-model"));
         // Unknown fields land in extras.
         assert_eq!(n.config.extras.len(), 2);
         assert_eq!(n.config.extras["max_subagents"], serde_json::json!(5));

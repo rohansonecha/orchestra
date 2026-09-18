@@ -127,8 +127,8 @@ mod tests {
 
     #[test]
     fn unknown_command_keeps_raw() {
-        match parse("/model glm") {
-            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/model glm"),
+        match parse("/model foo") {
+            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/model foo"),
             other => panic!("expected Unknown, got {other:?}"),
         }
     }

@@ -31,10 +31,11 @@ from typing import Any
 TEMPLATE_PATH = Path(__file__).resolve().parent / "agent-template.yaml"
 
 # Defaults mirror main-box so an unspecified agent is "just another main-box"
-# (Design §7).
+# (Design §7). Empty model/provider = don't pin anything; pi uses its default
+# model from models.json and /model works as usual inside sessions.
 DEFAULTS: dict[str, Any] = {
-    "model": "zai-org/GLM-5.2-FP8",
-    "provider": "glm",
+    "model": "",
+    "provider": "",
     "effort": "medium",
     "autonomy": "guided",
     "urgency": "normal",

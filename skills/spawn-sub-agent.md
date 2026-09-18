@@ -22,7 +22,7 @@ Shell out to the parent gateway's CLI with a JSON message:
 
 ```bash
 openclaw agent --message "$(cat <<'EOF'
-{"intent":"spawn-agent","config":{"model":"zai-org/GLM-5.2-FP8","effort":"high","urgency":"normal","resources":{"cpus":4,"memory":16,"gpu":0}},"reason":"need a fresh box for parallel model evaluation"}
+{"intent":"spawn-agent","config":{"model":"your-model-id","effort":"high","urgency":"normal","resources":{"cpus":4,"memory":16,"gpu":0}},"reason":"need a fresh box for parallel model evaluation"}
 EOF
 )" --thinking high
 ```
@@ -38,8 +38,8 @@ The gateway (with the `launch-sub-agent` OpenClaw skill loaded) will:
 
 | Field       | Values                                  | Default            |
 |-------------|------------------------------------------|--------------------|
-| model       | any model id                             | zai-org/GLM-5.2-FP8 |
-| provider    | glm, ...                                 | glm                |
+| model       | any model id from models.json            | (pi default)       |
+| provider    | any provider name from models.json       | (pi default)       |
 | effort      | off, minimal, low, medium, high, xhigh   | medium             |
 | autonomy    | guided, semi, full                        | guided             |
 | urgency     | low, normal, high, urgent                 | normal             |

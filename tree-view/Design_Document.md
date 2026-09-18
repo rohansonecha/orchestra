@@ -297,8 +297,8 @@ agent is "just another main-box".
 
 ```json
 {
-  "model": "zai-org/GLM-5.2-FP8",
-  "provider": "glm",
+  "model": "",                   // any model id from models.json; empty = pi default
+  "provider": "",                // any provider name from models.json; empty = pi default
   "effort": "medium",          // off|minimal|low|medium|high|xhigh
   "autonomy": "guided",        // guided|semi|full  (what the agent may do without asking)
   "urgency": "normal",         // low|normal|high|urgent  (affects priority queuing + SSE push rate)

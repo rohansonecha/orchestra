@@ -56,11 +56,11 @@ You ──SSH──▶  MAIN BOX (sky launch main-box.yaml)
                   └── worktrees/<session-name>/  (branch: worktree-<name>)
 
                 pi coding agent (per session)
-                  · models.json → GLM endpoint (openai-completions)
+                  · models.json → any OpenAI-compatible endpoint
                   · session saved by name for multi-turn continuity
 
                 OpenClaw gateway (daemon, persistent)
-                  · model = GLM via openclaw.json
+                  · model = configured in openclaw.json
                   · agents: main (default), work
 ```
 
@@ -72,7 +72,7 @@ You ──SSH──▶  MAIN BOX (sky launch main-box.yaml)
 | [OpenClaw](https://openclaw.ai) | Gateway + agent personas + skills |
 | [SkyPilot](https://skypilot.co) | Compute orchestration for the main box |
 | [ratatui.rs](https://ratatui.rs) | Terminal UI framework |
-| GLM 5.2 (vLLM) | Self-hosted LLM; serves OpenAI-compatible API |
+| Your LLM provider | Any OpenAI-compatible API (vLLM, OpenRouter, OpenAI, token proxies, …) |
 
 ## Install
 
@@ -108,7 +108,7 @@ the `secrets:` field in `main-box.yaml`):
 
 | Secret | Purpose |
 |--------|---------|
-| `GLM_API_KEY` | vLLM bearer token for GLM |
+| `ORCHESTRA_API_KEY` | API key for your model provider |
 | `SKY_API_ENDPOINT` | SkyPilot API server URL |
 | `SKY_API_TOKEN` | SkyPilot API server token |
 | `GIT_EMAIL` | Git commit email |
@@ -151,7 +151,7 @@ orchestra/
 │       ├── session.rs              # Session state, pi spawn, persistence
 │       └── worktree.rs             # Git worktree create/remove
 ├── pi/
-│   └── models.json.example         # GLM/vLLM provider config template
+│   └── models.json.example         # Generic OpenAI-compatible provider template
 ├── openclaw/
 │   └── skills/                    # OpenClaw custom skills (add your own)
 ├── private.example/                # Parameterized templates (committed)
@@ -164,14 +164,22 @@ orchestra/
 
 ## Model config
 
-pi drives GLM via the **OpenAI-compatible API** (`openai-completions`), not the
-Anthropic API. This is because vLLM validates `Authorization: Bearer` and ignores
-`x-api-key`; the OpenAI client sends Bearer natively, the Anthropic client sends
-`x-api-key`. See `pi/models.json.example`.
+Orchestra is model-agnostic: pi talks to any **OpenAI-compatible API**
+(`openai-completions`) — vLLM, OpenRouter, OpenAI, a token proxy, etc.
+The OpenAI-compatible API is used rather than the Anthropic API because most
+providers validate `Authorization: Bearer` and ignore `x-api-key`; the OpenAI
+client sends Bearer natively. See `pi/models.json.example`.
 
-The API key is read from the `GLM_API_KEY` env var using the `!printf` command
-syntax: `"apiKey": "!printf %s $GLM_API_KEY"`. This avoids hardcoding the key
-in config files and lets secrets-manager inject it at launch time.
+**Multiple models:** list as many models as you want under the provider in
+`models.json`. Sessions start on pi's default model (or `ORCHESTRA_MODEL` if
+set in `~/.orchestra/env`) and you switch anytime with pi's `/model` command —
+the switch survives pi restarts. `models.json` reloads every time you open
+`/model`, so edits on the box take effect immediately.
+
+The API key is read from the `ORCHESTRA_API_KEY` env var using the `!printf`
+command syntax: `"apiKey": "!printf %s $ORCHESTRA_API_KEY"`. This avoids
+hardcoding the key in config files and lets secrets-manager inject it at
+launch time. (`GLM_API_KEY` is accepted as a legacy fallback.)
 
 ## OpenClaw agents
 

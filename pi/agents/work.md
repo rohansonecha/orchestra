@@ -11,8 +11,8 @@ SkyPilot sandbox with full file-system and network access.
 
 ## Model
 
-You are powered by GLM 5.2 via a self-hosted vLLM server. Your config is in
-`~/.pi/agent/models.json`.
+You are powered by the model configured in `~/.pi/agent/models.json` (any
+OpenAI-compatible provider). Switch models anytime with `/model`.
 
 ## Workspace
 

@@ -2,7 +2,8 @@
 
 > **Context for the next agent.** You're picking up an in-progress
 > implementation of the Tree View TUI for the orchestra project — a
-> personal agent orchestration platform (OpenClaw + pi + SkyPilot + GLM).
+> personal agent orchestration platform (OpenClaw + pi + SkyPilot + any
+> OpenAI-compatible LLM).
 > The foundation is built and tested; the sub-agent spawn + A2A
 > communication layers are stubbed and need to be wired. This document
 > tells you exactly what exists, what's stubbed, and what to do next.

@@ -4,7 +4,7 @@
 #   sky launch --infra "$SKY_INFRA" -c main-box skypilot/main-box.yaml
 #
 # Secrets are stored on the SkyPilot API server and resolved at launch time:
-#   GLM_API_KEY       — vLLM bearer token
+#   ORCHESTRA_API_KEY — API key for your model provider (any OpenAI-compatible endpoint)
 #   SKY_API_ENDPOINT  — SkyPilot API server URL
 #   SKY_API_TOKEN     — SkyPilot API server token
 #   GIT_EMAIL         — Git commit email
@@ -52,7 +52,7 @@ file_mounts:
 # Secrets resolved from the SkyPilot API server at launch time.
 # These become env vars on the pod — no need to pass --env at launch.
 secrets:
-  - secrets:GLM_API_KEY
+  - secrets:ORCHESTRA_API_KEY
   - secrets:SKY_API_ENDPOINT
   - secrets:SKY_API_TOKEN
   - secrets:GIT_EMAIL
@@ -149,14 +149,15 @@ setup: |
   # --- Start OpenClaw gateway ---
   # Config is already mounted at ~/.openclaw/openclaw.json (via file_mounts),
   # so no interactive onboard is needed. The apiKey field uses
-  # "!printf %s $GLM_API_KEY" which reads the env var set by secrets-manager.
+  # "!printf %s $ORCHESTRA_API_KEY" which reads the env var set by secrets-manager.
   mkdir -p ~/.openclaw/workspace ~/.orchestra
 
   # --- Persist secret env vars for SSH sessions ---
   # Secrets are only available during setup/run scripts, not SSH sessions.
   # Write them to ~/.orchestra/env so the TUI can load them when spawning pi.
   {
-    echo "GLM_API_KEY=$GLM_API_KEY"
+    echo "ORCHESTRA_API_KEY=$ORCHESTRA_API_KEY"
+    echo "GLM_API_KEY=$ORCHESTRA_API_KEY"  # legacy alias for old configs
     echo "SKY_API_ENDPOINT=$SKY_API_ENDPOINT"
     echo "SKY_API_TOKEN=$SKY_API_TOKEN"
     echo "GIT_EMAIL=$GIT_EMAIL"

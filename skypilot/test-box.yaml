@@ -7,7 +7,7 @@
 #   sky launch --infra "$SKY_INFRA" -c test-box skypilot/test-box.yaml
 #
 # Secrets (same as main-box, resolved from SkyPilot API server):
-#   GLM_API_KEY       — vLLM bearer token
+#   ORCHESTRA_API_KEY — API key for your model provider
 #   SKY_API_ENDPOINT  — SkyPilot API server URL
 #   SKY_API_TOKEN     — SkyPilot API server token
 #   GIT_EMAIL         — Git commit email
@@ -30,7 +30,7 @@ file_mounts:
 
 # Same secrets as main-box.
 secrets:
-  - secrets:GLM_API_KEY
+  - secrets:ORCHESTRA_API_KEY
   - secrets:SKY_API_ENDPOINT
   - secrets:SKY_API_TOKEN
   - secrets:GIT_EMAIL
@@ -107,7 +107,8 @@ setup: |
   # --- Persist secret env vars for SSH sessions ---
   mkdir -p ~/.orchestra
   {
-    echo "GLM_API_KEY=$GLM_API_KEY"
+    echo "ORCHESTRA_API_KEY=$ORCHESTRA_API_KEY"
+    echo "GLM_API_KEY=$ORCHESTRA_API_KEY"  # legacy alias for old configs
     echo "SKY_API_ENDPOINT=$SKY_API_ENDPOINT"
     echo "SKY_API_TOKEN=$SKY_API_TOKEN"
     echo "GIT_EMAIL=$GIT_EMAIL"
