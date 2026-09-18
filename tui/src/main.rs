@@ -48,6 +48,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Terminal;
 
 mod command;
+mod rename;
 mod session;
 mod tree_layout;
 mod tree_store;
@@ -191,13 +192,8 @@ impl App {
                 return;
             }
             command::DispatchCommand::Rename { new_name } => {
-                if let Some(id) = &self.selected_node_id {
-                    rename_node(id, &new_name);
-                    self.status_message = format!("Renamed to '{new_name}'");
-                    self.reload_tree();
-                } else {
-                    self.status_message = "No node selected to rename".to_string();
-                }
+                self.status_message = self.rename_selected(&new_name);
+                self.reload_tree();
                 self.input.clear();
                 self.cursor_pos = 0;
                 return;
@@ -353,14 +349,60 @@ impl App {
         let new_name = self.input.trim().to_string();
         if new_name.is_empty() {
             self.status_message = "Rename cancelled (empty name)".to_string();
-        } else if let Some(id) = self.rename_target.take() {
-            rename_node(&id, &new_name);
-            self.status_message = format!("Renamed to '{new_name}'");
+        } else {
+            // Rename the node the rename was started on (selection can't
+            // move while in Rename mode, but be explicit).
+            self.selected_node_id = self.rename_target.take();
+            self.status_message = self.rename_selected(&new_name);
             self.reload_tree();
         }
         self.input_mode = InputMode::Dispatch;
         self.input.clear();
         self.cursor_pos = 0;
+    }
+
+    /// Rename the selected node. Agents get a display-label change only
+    /// (renaming a SkyPilot cluster is far more invasive); sessions get a
+    /// full rename: tmux + worktree + branch + state dir + tree-store node.
+    /// Returns a status message.
+    fn rename_selected(&mut self, new_name: &str) -> String {
+        let Some(id) = self.selected_node_id.clone() else {
+            return "No node selected to rename".to_string();
+        };
+        let Some(node) = self.tree.get(&id).map(|n| n.raw.clone()) else {
+            return "Node not found".to_string();
+        };
+        let display = new_name.trim().to_string();
+        if display.is_empty() {
+            return "Rename cancelled (empty name)".to_string();
+        }
+        let paths = rename::default_paths();
+        match node.kind {
+            NodeKind::Agent => {
+                rename::set_display_name(&id, &display, &paths);
+                format!("Renamed to '{display}'")
+            }
+            NodeKind::Session => {
+                let old = node.tmux_session.clone().unwrap_or_else(|| node.name.clone());
+                let out = rename::rename_session(&old, &display, &paths);
+                if out.new_name.is_empty() {
+                    return format!("Rename failed: {}", out.logs.join("; "));
+                }
+                if out.new_name == old {
+                    // Sanitized name unchanged — label-only update.
+                    rename::set_display_name(&id, &display, &paths);
+                    return format!("Renamed to '{display}'");
+                }
+                // Keep the in-memory session list + selection in sync.
+                for s in self.sessions.iter_mut() {
+                    if s.name == old {
+                        s.name = out.new_name.clone();
+                    }
+                }
+                self.selected_node_id = Some(format!("session-{}", out.new_name));
+                format!("Renamed '{old}' -> '{}'", out.new_name)
+            }
+        }
     }
 
     fn cancel_rename(&mut self) {
@@ -566,24 +608,27 @@ fn synthesize_tree_from_sessions(sessions: &[Session]) -> Tree {
     }
 }
 
-/// Write a `display_name` to a node's JSON file directly. This is a TUI-side
-/// rename that the collector must preserve on its next pull (it reads the
-/// existing node and keeps `display_name` while updating state/sessions).
-/// If the store is absent (in-memory tree), the rename is a no-op — it
-/// only persists once the collector has written the store.
-fn rename_node(id: &str, new_name: &str) {
-    let store = TreeStore::default_dir();
-    let path = store.dir().join("nodes").join(format!("{id}.json"));
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return; // store absent — nothing to persist
-    };
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return;
-    };
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("display_name".to_string(), serde_json::json!(new_name));
+/// `orchestra rename <old> <new>` — rename a session from the CLI.
+/// Uses the same logic as the TUI's rename, so it's scriptable and
+/// testable without the interactive UI.
+fn rename_cli() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    if args.len() != 2 {
+        eprintln!("usage: orchestra rename <old-name> <new-name>");
+        std::process::exit(2);
     }
-    let _ = std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap_or_default());
+    let (old, display) = (&args[0], &args[1]);
+    let paths = rename::default_paths();
+    let out = rename::rename_session(old, display, &paths);
+    if out.new_name.is_empty() {
+        eprintln!("rename failed: {}", out.logs.join("; "));
+        std::process::exit(1);
+    }
+    for line in &out.logs {
+        println!("  {line}");
+    }
+    println!("renamed '{old}' -> '{}'", out.new_name);
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -595,6 +640,7 @@ fn main() -> anyhow::Result<()> {
                 println!("orchestra {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
+            "rename" => return rename_cli(),
             _ => {}
         }
     }

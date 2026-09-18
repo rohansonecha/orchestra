@@ -218,10 +218,10 @@ impl TreeStore {
         Self { dir: dir.into() }
     }
 
+    #[allow(dead_code)]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
-
     /// Load `index.json`. Returns `None` if the store doesn't exist yet
     /// (fresh main-box with no collector run).
     pub fn load_index(&self) -> Option<Index> {
