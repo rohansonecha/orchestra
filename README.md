@@ -84,13 +84,6 @@ PATH:
 curl -fsSL https://raw.githubusercontent.com/rohansonecha/orchestra/main/install.sh | bash
 ```
 
-While the repo is private, authenticate the download with `gh`:
-
-```bash
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" \
-  https://raw.githubusercontent.com/rohansonecha/orchestra/main/install.sh | bash
-```
-
 Re-running the same command upgrades everything (git pull + rebuild). Existing
 config in `private/` and `~/.orchestra` is never overwritten.
 
