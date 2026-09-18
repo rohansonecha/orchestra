@@ -40,6 +40,24 @@ Session state is persisted to `~/.orchestra/sessions/<name>/state.json`. On TUI
 restart, previous sessions appear in the list (marked as Idle). Attach to resume
 the pi conversation where you left off.
 
+### Rename a session
+Renaming moves the session's *whole* identity, not just its label:
+
+- **Tree View:** select the session and press `n`, type a name, Enter.
+- **Dispatch input:** `/rename My Session` (renames the node currently
+  selected in Tree View).
+- **CLI:** `orchestra rename <old-name> <new-name>`
+
+A rename updates the tmux session, the git worktree dir + branch, the state
+dir (`~/.orchestra/sessions/`), and the tree-store node id — so the
+collector keeps matching the node instead of creating a duplicate. The label
+keeps your raw text (`My Session`) while the underlying name is sanitized
+(`my-session`).
+
+Note: a *running* pi process keeps its original `--name` (that key holds its
+conversation history), so its pi-side session history stays under the old
+name even though tmux/worktree/etc. are renamed.
+
 ## Architecture
 
 ```
