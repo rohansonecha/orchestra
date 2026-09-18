@@ -74,17 +74,38 @@ You ──SSH──▶  MAIN BOX (sky launch main-box.yaml)
 | [ratatui.rs](https://ratatui.rs) | Terminal UI framework |
 | GLM 5.2 (vLLM) | Self-hosted LLM; serves OpenAI-compatible API |
 
-## Setup
+## Install
 
-### 1. Clone and configure private values
+One command — installs deps (Node, Rust, tmux, pi, OpenClaw, SkyPilot CLI),
+clones the repo to `~/orchestra`, builds the TUI, and puts `orchestra` on your
+PATH:
 
 ```bash
-git clone https://github.com/rohansonecha/orchestra.git
-cd orchestra
-mkdir private
-cp pi/models.json.example private/models.json            # fill in real endpoint
+curl -fsSL https://raw.githubusercontent.com/rohansonecha/orchestra/main/install.sh | bash
+```
+
+While the repo is private, authenticate the download with `gh`:
+
+```bash
+curl -fsSL -H "Authorization: Bearer $(gh auth token)" \
+  https://raw.githubusercontent.com/rohansonecha/orchestra/main/install.sh | bash
+```
+
+Re-running the same command upgrades everything (git pull + rebuild). Existing
+config in `private/` and `~/.orchestra` is never overwritten.
+
+## Setup
+
+### 1. Configure private values
+
+The installer creates `~/orchestra/private/` from the templates. Fill in real
+values:
+
+```bash
+cd ~/orchestra
+$EDITOR private/env                                        # endpoints + tokens
+cp pi/models.json.example private/models.json              # fill in real endpoint
 cp private.example/openclaw/openclaw.json private/openclaw/openclaw.json  # fill in real values
-# Edit private/ files with your real endpoint URLs, tokens, and work repo path
 ```
 
 ### 2. Required secrets

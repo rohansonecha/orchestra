@@ -63,9 +63,10 @@ secrets:
 setup: |
   set -euo pipefail
 
-  # --- Node.js 22 (for openclaw + pi + TUI) ---
+  # --- Node.js 24 (for openclaw + pi + TUI) ---
   # Default image has no Node; install via NodeSource.
-  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  # Node 24 required: openclaw@latest needs >=24.16.
+  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
   sudo apt-get install -y nodejs tmux
 
   # --- Install Rust (for building the TUI) ---
