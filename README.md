@@ -110,7 +110,7 @@ the `secrets:` field in `main-box.yaml`):
 |--------|---------|
 | `ORCHESTRA_API_KEY` | API key for your model provider |
 | `SKY_API_ENDPOINT` | SkyPilot API server URL |
-| `SKY_API_TOKEN` | SkyPilot API server token |
+| `ORCHESTRA_SKY_API_TOKEN` | SkyPilot API server token (orchestra service account) |
 | `GIT_EMAIL` | Git commit email |
 | `GIT_NAME` | Git commit name |
 | `GITHUB_TOKEN` | GitHub PAT (for cloning private repos) |
@@ -122,7 +122,7 @@ the `secrets:` field in `main-box.yaml`):
 |----------|---------|
 | `SKY_INFRA` | SkyPilot infra to launch on (e.g. `k8s/your-context`) |
 | `SKY_API_ENDPOINT` | SkyPilot API server URL (also a secret, but needed locally for `sky api login`) |
-| `SKY_API_TOKEN` | SkyPilot API server token (also a secret, but needed locally for `sky api login`) |
+| `ORCHESTRA_SKY_API_TOKEN` | SkyPilot API server token (also a secret, but needed locally for `sky api login`) |
 
 ### 4. Launch the main box
 

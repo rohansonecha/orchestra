@@ -6,7 +6,7 @@
 # Secrets are stored on the SkyPilot API server and resolved at launch time:
 #   ORCHESTRA_API_KEY — API key for your model provider (any OpenAI-compatible endpoint)
 #   SKY_API_ENDPOINT  — SkyPilot API server URL
-#   SKY_API_TOKEN     — SkyPilot API server token
+#   ORCHESTRA_SKY_API_TOKEN — SkyPilot API server token (orchestra service account)
 #   GIT_EMAIL         — Git commit email
 #   GIT_NAME          — Git commit name
 #   GITHUB_TOKEN      — GitHub PAT (for cloning private repos)
@@ -54,7 +54,7 @@ file_mounts:
 secrets:
   - secrets:ORCHESTRA_API_KEY
   - secrets:SKY_API_ENDPOINT
-  - secrets:SKY_API_TOKEN
+  - secrets:ORCHESTRA_SKY_API_TOKEN
   - secrets:GIT_EMAIL
   - secrets:GIT_NAME
   - secrets:GITHUB_TOKEN
@@ -97,8 +97,10 @@ setup: |
   pip3 install "skypilot[kubernetes]"
 
   # --- Login sky to the SkyPilot API server ---
-  # Secrets are resolved as env vars: $SKY_API_ENDPOINT, $SKY_API_TOKEN
-  sky api login -e "$SKY_API_ENDPOINT" --token "$SKY_API_TOKEN" || {
+  # Secrets are resolved as env vars: $SKY_API_ENDPOINT, $ORCHESTRA_SKY_API_TOKEN.
+  # Export the conventional name too, for tooling that expects it.
+  export SKY_API_TOKEN="$ORCHESTRA_SKY_API_TOKEN"
+  sky api login -e "$SKY_API_ENDPOINT" --token "$ORCHESTRA_SKY_API_TOKEN" || {
     echo "WARNING: sky api login failed; subagent launching will not work"
   }
 
@@ -159,7 +161,8 @@ setup: |
     echo "ORCHESTRA_API_KEY=$ORCHESTRA_API_KEY"
     echo "GLM_API_KEY=$ORCHESTRA_API_KEY"  # legacy alias for old configs
     echo "SKY_API_ENDPOINT=$SKY_API_ENDPOINT"
-    echo "SKY_API_TOKEN=$SKY_API_TOKEN"
+    echo "ORCHESTRA_SKY_API_TOKEN=$ORCHESTRA_SKY_API_TOKEN"
+    echo "SKY_API_TOKEN=$ORCHESTRA_SKY_API_TOKEN"  # conventional alias
     echo "GIT_EMAIL=$GIT_EMAIL"
     echo "GIT_NAME=$GIT_NAME"
     echo "GITHUB_TOKEN=$GITHUB_TOKEN"
