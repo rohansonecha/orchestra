@@ -1,4 +1,4 @@
-// orchestra-tui — Terminal UI for managing parallel pi coding agent sessions.
+// orchestra — Terminal UI for managing parallel pi coding agent sessions.
 //
 // Two-level TUI (Design_Document.md §9):
 //   - Tree View (default): spatial graph of the agent/session hierarchy.
@@ -944,13 +944,21 @@ fn attach_to_session(name: &str, status_message: &mut String) {
 /// Pull latest code and rebuild the TUI binary. tmux sessions are
 /// independent processes — they survive the upgrade. The user just
 /// needs to restart the TUI after upgrading.
+/// Re-point the `orchestra` symlink on PATH at the freshly built binary.
+/// Installs from before the binary was renamed link to
+/// target/release/orchestra-tui, which a rebuild no longer updates.
+const RELINK: &str = "for L in \"${ORCHESTRA_BIN_DIR:-/nonexistent}/orchestra\" \
+    /usr/local/bin/orchestra /opt/homebrew/bin/orchestra \"$HOME/.local/bin/orchestra\"; do \
+    if [ -L \"$L\" ]; then ln -sf \"$PWD/target/release/orchestra\" \"$L\" 2>/dev/null \
+    || sudo -n ln -sf \"$PWD/target/release/orchestra\" \"$L\"; fi; done; true";
+
 fn upgrade() -> anyhow::Result<()> {
     println!("Upgrading orchestra...");
 
     let status = Command::new("bash")
         .arg("-c")
         .arg(format!(
-            "cd {ORCHESTRA_DIR} && git pull origin main && cd tui && source ~/.cargo/env && cargo build --release"
+            "cd {ORCHESTRA_DIR} && git pull origin main && cd tui && source ~/.cargo/env && cargo build --release && {RELINK}"
         ))
         .status()?;
 

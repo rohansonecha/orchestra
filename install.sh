@@ -202,9 +202,9 @@ fi
 # --------------------------------------------------------------------------
 # Build the TUI
 # --------------------------------------------------------------------------
-step "Building orchestra-tui"
+step "Building orchestra"
 cargo build --release --manifest-path "$ORCHESTRA_HOME/tui/Cargo.toml"
-TUI_BIN="$ORCHESTRA_HOME/tui/target/release/orchestra-tui"
+TUI_BIN="$ORCHESTRA_HOME/tui/target/release/orchestra"
 [ -x "$TUI_BIN" ] || die "Build succeeded but $TUI_BIN missing?"
 ok "built $TUI_BIN"
 
