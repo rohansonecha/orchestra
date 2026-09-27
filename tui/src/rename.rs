@@ -2,7 +2,9 @@
 // identity lives:
 //
 //   1. tmux session name
-//   2. git worktree dir (<worktrees>/<name>) + branch (worktree-<name>)
+//   2. git worktree dir (<worktrees>/<name>) + branch (worktree-<name>),
+//      only for worktrees orchestra created (imported sessions run in
+//      someone else's directory, which is left alone)
 //   3. state dir + ready marker (<sessions>/<name>{,.ready})
 //   4. tree-store node (id `session-<name>`, plus `name` / `tmux_session`)
 //
@@ -19,10 +21,12 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::paths;
+
 /// Filesystem + store locations a rename touches. Injected so tests can
-/// point at a temp dir. Defaults must match the constants in main.rs /
-/// session.rs.
+/// point at a temp dir.
 pub struct Paths {
+    /// Main checkout owning the worktree; empty = don't touch any worktree.
     pub repo: String,
     pub worktrees: String,
     pub sessions: String,
@@ -30,14 +34,26 @@ pub struct Paths {
     pub root_id: String,
 }
 
-pub fn default_paths() -> Paths {
-    Paths {
-        repo: "/home/sky/work-repos/prototype".to_string(),
-        worktrees: "/home/sky/orchestra/worktrees".to_string(),
-        sessions: "/home/sky/.orchestra/sessions".to_string(),
-        store: "/home/sky/.orchestra/tree".to_string(),
+/// Paths for renaming session `name`, read from its state.json: the repo
+/// and worktree parent it was created with, or nothing to move when
+/// orchestra doesn't own its directory.
+pub fn paths_for_session(name: &str) -> Paths {
+    let mut p = Paths {
+        repo: String::new(),
+        worktrees: String::new(),
+        sessions: paths::sessions_dir().to_string_lossy().to_string(),
+        store: paths::tree_store_dir().to_string_lossy().to_string(),
         root_id: "agent-main-box".to_string(),
+    };
+    let state = paths::sessions_dir().join(name).join("state.json");
+    let sess = std::fs::read_to_string(state)
+        .ok()
+        .and_then(|s| serde_json::from_str::<crate::session::Session>(&s).ok());
+    if let Some((repo, wt, _)) = sess.as_ref().and_then(|s| s.owned_worktree()) {
+        p.repo = repo.to_string_lossy().to_string();
+        p.worktrees = wt.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
     }
+    p
 }
 
 /// Result of a rename attempt.
@@ -116,7 +132,10 @@ pub fn rename_session(old: &str, display: &str, p: &Paths) -> Outcome {
     // 2. git worktree dir + branch.
     let old_wt = format!("{}/{old}", p.worktrees);
     let new_wt = format!("{}/{new}", p.worktrees);
-    if Path::new(&old_wt).exists() {
+    let mut moved_wt = false;
+    if p.repo.is_empty() {
+        logs.push("worktree: not owned by orchestra (left in place)".to_string());
+    } else if Path::new(&old_wt).exists() {
         let moved = Command::new("git")
             .args(["worktree", "move", &old_wt, &new_wt])
             .current_dir(&p.repo)
@@ -124,6 +143,7 @@ pub fn rename_session(old: &str, display: &str, p: &Paths) -> Outcome {
             .map(|s| s.success())
             .unwrap_or(false);
         if moved {
+            moved_wt = true;
             logs.push(format!("worktree: {old} -> {new}"));
             // Rename the branch from inside the worktree (renaming a branch
             // checked out in a linked worktree must be done there).
@@ -155,6 +175,12 @@ pub fn rename_session(old: &str, display: &str, p: &Paths) -> Outcome {
             if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(obj) = v.as_object_mut() {
                     obj.insert("name".to_string(), serde_json::json!(new));
+                    if moved_wt {
+                        obj.insert("worktree_path".to_string(), serde_json::json!(new_wt));
+                        if obj.get("branch").is_some_and(|b| !b.is_null()) {
+                            obj.insert("branch".to_string(), serde_json::json!(format!("worktree-{new}")));
+                        }
+                    }
                 }
                 let _ = std::fs::write(
                     new_dir.join("state.json"),

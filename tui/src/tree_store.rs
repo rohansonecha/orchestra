@@ -19,9 +19,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Default store location. Overridable via `TreeStore::open` for tests.
-pub const DEFAULT_STORE_DIR: &str = "/home/sky/.orchestra/tree";
-
 /// A node is stale if no successful collector pull has landed in this long.
 /// 90s = 3 missed 30s pulls (Design §10).
 pub const STALE_THRESHOLD_SECS: u64 = 90;
@@ -208,7 +205,7 @@ impl TreeStore {
     /// Open the default store at `~/.orchestra/tree/`.
     pub fn default_dir() -> Self {
         Self {
-            dir: PathBuf::from(DEFAULT_STORE_DIR),
+            dir: crate::paths::tree_store_dir(),
         }
     }
 

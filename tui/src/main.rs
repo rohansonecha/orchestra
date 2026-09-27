@@ -1,4 +1,5 @@
-// orchestra — Terminal UI for managing parallel pi coding agent sessions.
+// orchestra — Terminal UI for managing parallel coding agent sessions
+// (pi, Claude Code, Codex), each in its own git worktree.
 //
 // Two-level TUI (Design_Document.md §9):
 //   - Tree View (default): spatial graph of the agent/session hierarchy.
@@ -16,16 +17,29 @@
 //   x           — tear down selected agent (sky down) / session (tmux kill)
 //   q/Ctrl+C    — quit
 //
-// Keybindings — Agent View (unchanged from the classic list TUI):
+// Keybindings — Agent View (the classic list TUI):
 //   Up/Down     — navigate session list
 //   Enter       — dispatch new session (if input non-empty) or attach
+//   i           — import Claude Code / Codex sessions (empty input)
+//   x / q       — delete session / quit (empty input only)
 //   Right       — move cursor right / attach to session (empty input)
 //   Left        — move cursor left (detach inside tmux only at column 0)
 //   Alt+Left    — jump to previous word
 //   Alt+Right   — jump to next word
 //   Alt+Delete  — delete previous word
 //   Tab/Esc     — return to Tree View
-//   q/Ctrl+C    — quit
+//   Ctrl+C      — quit
+//
+// Keybindings — Import View:
+//   Up/Down     — navigate
+//   Enter       — resume with its own CLI (claude --resume / codex resume)
+//   p           — fork the transcript into a new pi session
+//   a           — toggle this repo / all repos
+//   Esc/Tab     — back to Agent View
+//
+// Sessions dispatched inside a git repo get a worktree at
+// <repo>/.orchestra/worktrees/<name> (see worktree.rs). The repo is the one
+// orchestra was launched from.
 //
 // The TUI is a pure reader of the tree store at ~/.orchestra/tree/. If the
 // store is absent (collector not running), it synthesizes a tree in memory
@@ -48,20 +62,24 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Terminal;
 
 mod command;
+mod config;
+mod convert;
+mod import;
+mod paths;
 mod rename;
+mod repo;
 mod session;
 mod tree_layout;
 mod tree_store;
 mod tree_view;
 mod worktree;
 
-use session::{Session, SessionState};
+use config::Config;
+use import::ExternalSession;
+use repo::Repo;
+use session::{Backend, Origin, Session, SessionState};
 use tree_store::{Node, NodeKind, NodeState, NodeView, Tree, TreeStore};
 
-const WORK_REPO_PATH: &str = "/home/sky/work-repos/prototype";
-const SESSIONS_DIR: &str = "/home/sky/.orchestra/sessions";
-const WORKTREES_DIR: &str = "/home/sky/orchestra/worktrees";
-const ORCHESTRA_DIR: &str = "/home/sky/orchestra";
 const ROOT_AGENT_ID: &str = "agent-main-box";
 
 /// Which TUI level is active.
@@ -69,6 +87,15 @@ const ROOT_AGENT_ID: &str = "agent-main-box";
 enum ViewMode {
     Tree,
     Agent,
+    Import,
+}
+
+/// Import View state: external sessions found on disk.
+struct ImportState {
+    items: Vec<ExternalSession>,
+    list_state: ListState,
+    /// Show sessions from every directory, not just the current repo.
+    all_repos: bool,
 }
 
 /// Inline input mode for the dispatch box.
@@ -102,11 +129,20 @@ struct App {
     /// selected session index; second `x` confirms + executes. Any other
     /// key clears it. Prevents accidental full-cleanup deletion.
     pending_delete: Option<usize>,
+    /// Same for `x` in Tree View: the node id armed for teardown.
+    pending_tree_delete: Option<String>,
+    /// Repo orchestra was launched in; None outside git (no worktrees).
+    repo: Option<Repo>,
+    launch_dir: std::path::PathBuf,
+    config: Config,
+    import: ImportState,
 }
 
 impl App {
     fn new() -> Self {
         let sessions = session::load_sessions();
+        let launch_dir = std::env::current_dir().unwrap_or_else(|_| paths::home());
+        let repo = repo::detect_for_launch(&launch_dir);
         let mut app = Self {
             sessions,
             list_state: ListState::default(),
@@ -122,6 +158,11 @@ impl App {
             input_mode: InputMode::Dispatch,
             rename_target: None,
             pending_delete: None,
+            pending_tree_delete: None,
+            repo,
+            launch_dir,
+            config: Config::load(),
+            import: ImportState { items: Vec::new(), list_state: ListState::default(), all_repos: false },
         };
         app.reload_tree();
         app.selected_node_id = tree_view::default_selection(&app.tree, None);
@@ -204,38 +245,241 @@ impl App {
                 self.cursor_pos = 0;
                 return;
             }
+            command::DispatchCommand::DispatchWith { backend, text } => {
+                self.dispatch_session(&text, backend);
+            }
+            command::DispatchCommand::SetBackend { backend } => {
+                self.config.default_backend = backend;
+                self.config.save();
+                self.status_message = format!("Default backend: {}", self.backend_label(backend));
+                self.clear_input();
+            }
+            command::DispatchCommand::Model { model } => {
+                self.status_message = self.set_model(model);
+                self.clear_input();
+            }
+            command::DispatchCommand::Import => {
+                self.clear_input();
+                self.open_import();
+            }
             command::DispatchCommand::PlainPrompt { text } => {
-                self.dispatch_session(&text);
+                self.dispatch_session(&text, self.config.default_backend);
             }
         }
     }
 
-    fn dispatch_session(&mut self, prompt: &str) {
-        let name = session::generate_name(prompt);
-        let worktree_path = format!("{WORKTREES_DIR}/{name}");
+    fn clear_input(&mut self) {
+        self.input.clear();
+        self.cursor_pos = 0;
+    }
 
-        match worktree::create_worktree(WORK_REPO_PATH, &worktree_path, &name) {
-            Ok(_) => {}
-            Err(e) => {
-                self.status_message = format!("Worktree failed: {e}");
-                return;
-            }
+    /// `pi (openrouter/qwen3)` style label for status lines.
+    fn backend_label(&self, b: Backend) -> String {
+        match self.config.model_for(b) {
+            Some(m) => format!("{} ({m})", b.as_str()),
+            None => b.as_str().to_string(),
         }
+    }
 
-        match session::spawn_pi(&name, &worktree_path, prompt) {
-            Ok(()) => {
-                let sess = Session::new(name.clone(), prompt.to_string(), worktree_path);
-                session::save_session(&sess);
-                self.sessions.push(sess);
-                self.input.clear();
-                self.cursor_pos = 0;
-                self.status_message = format!("Dispatched: {name}");
-                self.list_state.select(Some(self.sessions.len() - 1));
-                // Refresh the tree so the new session appears.
-                self.reload_tree();
+    /// `/model` for the default backend. pi models are checked against
+    /// `pi --list-models` (built-in providers + ~/.pi/agent/models.json).
+    fn set_model(&mut self, model: Option<String>) -> String {
+        let b = self.config.default_backend;
+        let Some(model) = model else {
+            return format!("Default: {} — /model <name> to change, /model - to reset", self.backend_label(b));
+        };
+        if model == "-" {
+            self.config.set_model(b, None);
+            self.config.save();
+            return format!("{} model reset to its default", b.as_str());
+        }
+        if b == Backend::Pi {
+            match config::pi_models_matching(&model) {
+                Ok(found) if found.is_empty() => {
+                    return format!("pi knows no model matching '{model}' (see pi --list-models)");
+                }
+                // A unique fuzzy match is stored as its exact provider/id.
+                Ok(found) if found.len() == 1 => {
+                    self.config.set_model(b, Some(found[0].clone()));
+                }
+                Ok(found) if found.contains(&model) => self.config.set_model(b, Some(model.clone())),
+                Ok(found) => {
+                    return format!("'{model}' matches {} models: {}", found.len(), found.join(", "));
+                }
+                // pi missing or broken: store as typed; pi reports errors.
+                Err(_) => self.config.set_model(b, Some(model.clone())),
+            }
+        } else {
+            self.config.set_model(b, Some(model));
+        }
+        self.config.save();
+        format!("Default: {}", self.backend_label(b))
+    }
+
+    /// New session for `prompt`: a fresh worktree when launched inside a
+    /// repo, otherwise the launch directory itself.
+    fn dispatch_session(&mut self, prompt: &str, backend: Backend) {
+        let name = session::generate_name(prompt);
+        let mut sess = Session::new(name.clone(), prompt.to_string(), String::new(), backend);
+        sess.model = self.config.model_for(backend);
+        let mut warnings = Vec::new();
+        match &self.repo {
+            Some(repo) => match worktree::create_worktree(repo, &name) {
+                Ok(wt) => {
+                    sess.worktree_path = wt.path.to_string_lossy().to_string();
+                    sess.repo_root = Some(repo.root.to_string_lossy().to_string());
+                    sess.base_ref = Some(repo.base_ref.clone());
+                    sess.branch = Some(wt.branch);
+                    warnings = wt.warnings;
+                }
+                Err(e) => {
+                    self.status_message = format!("Worktree failed: {e}");
+                    return;
+                }
+            },
+            None => sess.worktree_path = self.launch_dir.to_string_lossy().to_string(),
+        }
+        let where_ = if sess.branch.is_some() { "worktree" } else { "no repo, no worktree" };
+        let label = sess.tag();
+        self.start_session(sess, format!("Dispatched {name} [{label}, {where_}]"), warnings);
+    }
+
+    /// Spawn + persist + select a session. Shared by dispatch and import.
+    fn start_session(&mut self, sess: Session, ok_msg: String, warnings: Vec<String>) {
+        if let Err(e) = session::spawn(&sess) {
+            self.status_message = format!("{} spawn failed: {e}", sess.backend.as_str());
+            return;
+        }
+        session::save_session(&sess);
+        self.sessions.push(sess);
+        self.clear_input();
+        self.status_message = if warnings.is_empty() {
+            ok_msg
+        } else {
+            format!("{ok_msg} — {}", warnings.join("; "))
+        };
+        self.list_state.select(Some(self.sessions.len() - 1));
+        // Refresh the tree so the new session appears.
+        self.reload_tree();
+    }
+
+    // --- Import View ---
+
+    fn open_import(&mut self) {
+        self.mode = ViewMode::Import;
+        self.rescan_import();
+    }
+
+    fn rescan_import(&mut self) {
+        let under = if self.import.all_repos {
+            None
+        } else {
+            Some(self.repo.as_ref().map(|r| r.root.clone()).unwrap_or_else(|| self.launch_dir.clone()))
+        };
+        self.import.items = import::scan(under.as_deref());
+        self.import.list_state.select(if self.import.items.is_empty() { None } else { Some(0) });
+    }
+
+    fn import_move(&mut self, dir: i32) {
+        let n = self.import.items.len();
+        if n == 0 {
+            return;
+        }
+        let cur = self.import.list_state.selected().unwrap_or(0) as i32;
+        self.import.list_state.select(Some((cur + dir).rem_euclid(n as i32) as usize));
+    }
+
+    /// The orchestra session already attached to an external session.
+    fn managing(&self, ext: &ExternalSession) -> Option<&Session> {
+        self.sessions.iter().find(|s| {
+            s.external_id.as_deref() == Some(ext.id.as_str())
+                || (s.backend == ext.backend && s.backend == Backend::Claude && s.id == ext.id)
+                || (s.backend == Backend::Codex && ext.backend == Backend::Codex
+                    && s.external_id.is_none() && s.worktree_path == ext.cwd)
+        })
+    }
+
+    fn imported_name(ext: &ExternalSession) -> String {
+        let base = rename::sanitize_name(&ext.title);
+        let base: String = base.split('-').take(3).collect::<Vec<_>>().join("-");
+        let short: String = ext.id.chars().filter(|c| c.is_ascii_hexdigit()).take(4).collect();
+        let prefix = if ext.backend == Backend::Claude { "cc" } else { "cx" };
+        if base.is_empty() { format!("{prefix}-{short}") } else { format!("{prefix}-{base}-{short}") }
+    }
+
+    /// Enter in Import View: resume with the session's own CLI, in its
+    /// original directory. Attaches to it if it's already running.
+    fn import_resume(&mut self) {
+        let Some(ext) = self.import.list_state.selected().and_then(|i| self.import.items.get(i)).cloned() else {
+            return;
+        };
+        if let Some(existing) = self.managing(&ext) {
+            let name = existing.name.clone();
+            attach_to_session(&name, &mut self.status_message);
+            self.needs_clear = true;
+            return;
+        }
+        if !std::path::Path::new(&ext.cwd).is_dir() {
+            self.status_message = format!("{} no longer exists; press p to fork into pi instead", ext.cwd);
+            return;
+        }
+        let name = Self::imported_name(&ext);
+        let mut sess = Session::new(name.clone(), ext.title.clone(), ext.cwd.clone(), ext.backend);
+        sess.origin = Origin::Resumed;
+        sess.external_id = Some(ext.id.clone());
+        self.start_session(sess, format!("Resumed {} session as {name}", ext.backend.as_str()), Vec::new());
+        self.mode = ViewMode::Agent;
+    }
+
+    /// `p` in Import View: convert the transcript into a pi session in a
+    /// fresh worktree (or its original directory outside a repo).
+    fn import_fork(&mut self) {
+        let Some(ext) = self.import.list_state.selected().and_then(|i| self.import.items.get(i)).cloned() else {
+            return;
+        };
+        let name = format!("pi-{}", Self::imported_name(&ext));
+        let mut sess = Session::new(name.clone(), ext.title.clone(), String::new(), Backend::Pi);
+        sess.origin = Origin::Forked { from: format!("{}:{}", ext.backend.as_str(), ext.id) };
+        sess.model = self.config.model_for(Backend::Pi);
+        // Fork into a worktree of the repo the session belonged to, so the
+        // pi copy can't step on the original's files. Sessions from outside
+        // any repo run in their original directory.
+        // Start from the commit the source session is on, so the code
+        // matches the conversation (uncommitted edits don't carry over).
+        let src_dir = std::path::Path::new(&ext.cwd);
+        let source_repo = repo::detect(src_dir);
+        let src_head = repo::git(src_dir, &["rev-parse", "HEAD"]);
+        let mut warnings = Vec::new();
+        match source_repo {
+            Some(r) => match worktree::create_worktree_from(&r, &name, src_head.as_deref()) {
+                Ok(wt) => {
+                    sess.worktree_path = wt.path.to_string_lossy().to_string();
+                    sess.repo_root = Some(r.root.to_string_lossy().to_string());
+                    sess.base_ref = Some(src_head.clone().unwrap_or_else(|| r.base_ref.clone()));
+                    sess.branch = Some(wt.branch);
+                    warnings = wt.warnings;
+                }
+                Err(e) => {
+                    self.status_message = format!("Worktree failed: {e}");
+                    return;
+                }
+            },
+            None => sess.worktree_path = ext.cwd.clone(),
+        }
+        match convert::fork_into_pi(ext.backend, &ext.path, &sess.pi_session_dir(), &sess.worktree_path, sess.model.as_deref()) {
+            Ok((_, n)) => {
+                let from = match (&ext.git_branch, &src_head) {
+                    (Some(b), Some(_)) if sess.branch.is_some() => format!(", from {b} HEAD"),
+                    _ => String::new(),
+                };
+                self.start_session(sess, format!("Forked into pi as {name}: {n} messages{from}"), warnings);
+                self.mode = ViewMode::Agent;
             }
             Err(e) => {
-                self.status_message = format!("pi spawn failed: {e}");
+                self.status_message = format!("Fork failed: {e}");
+                if let Some((repo, wt, branch)) = sess.owned_worktree() {
+                    let _ = worktree::remove_worktree(&repo, &wt, &branch);
+                }
             }
         }
     }
@@ -376,14 +620,19 @@ impl App {
         if display.is_empty() {
             return "Rename cancelled (empty name)".to_string();
         }
-        let paths = rename::default_paths();
         match node.kind {
             NodeKind::Agent => {
-                rename::set_display_name(&id, &display, &paths);
+                rename::set_display_name(&id, &display, &rename::paths_for_session(""));
                 format!("Renamed to '{display}'")
             }
             NodeKind::Session => {
                 let old = node.tmux_session.clone().unwrap_or_else(|| node.name.clone());
+                // Flush in-memory state first so the rename reads (and
+                // rewrites) the current state.json.
+                if let Some(s) = self.sessions.iter().find(|s| s.name == old) {
+                    session::save_session(s);
+                }
+                let paths = rename::paths_for_session(&old);
                 let out = rename::rename_session(&old, &display, &paths);
                 if out.new_name.is_empty() {
                     return format!("Rename failed: {}", out.logs.join("; "));
@@ -394,9 +643,22 @@ impl App {
                     return format!("Renamed to '{display}'");
                 }
                 // Keep the in-memory session list + selection in sync.
+                // Reload the renamed session so its worktree path / branch
+                // match what rename wrote to disk.
+                let state = paths::sessions_dir().join(&out.new_name).join("state.json");
+                let renamed = std::fs::read_to_string(state)
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<Session>(&c).ok());
                 for s in self.sessions.iter_mut() {
                     if s.name == old {
-                        s.name = out.new_name.clone();
+                        match &renamed {
+                            Some(r) => {
+                                s.name = r.name.clone();
+                                s.worktree_path = r.worktree_path.clone();
+                                s.branch = r.branch.clone();
+                            }
+                            None => s.name = out.new_name.clone(),
+                        }
                     }
                 }
                 self.selected_node_id = Some(format!("session-{}", out.new_name));
@@ -413,6 +675,8 @@ impl App {
         self.status_message = "Rename cancelled".to_string();
     }
 
+    /// `x` in Tree View. Like Agent View, the first press only arms: a
+    /// stray `x` must not `sky down` a cluster or delete a worktree.
     fn teardown_selected(&mut self) {
         let Some(id) = self.selected_node_id.clone() else {
             return;
@@ -420,12 +684,30 @@ impl App {
         let Some(node) = self.tree.get(&id) else {
             return;
         };
+        if self.pending_tree_delete.as_deref() != Some(id.as_str()) {
+            let what = match node.raw.kind {
+                NodeKind::Agent => format!(
+                    "TEAR DOWN agent cluster '{}' (sky down)",
+                    node.raw.sky_cluster.clone().unwrap_or_else(|| id.clone())
+                ),
+                NodeKind::Session => format!("DELETE session '{}'", node.raw.label()),
+            };
+            self.pending_tree_delete = Some(id);
+            self.status_message = format!("Press x again to {what}. Any other key cancels.");
+            return;
+        }
+        self.pending_tree_delete = None;
         match node.raw.kind {
             NodeKind::Agent => {
                 let cluster = node.raw.sky_cluster.clone().unwrap_or_else(|| id.clone());
                 self.status_message = format!("Tearing down agent '{cluster}' (sky down)...");
+                // stdin closed: sky must never block the TUI on a prompt
+                // (e.g. its client-version switch question).
                 let status = Command::new("sky")
                     .args(["down", "-y", &cluster])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .status();
                 match status {
                     Ok(s) if s.success() => {
@@ -469,20 +751,30 @@ impl App {
             Err(e) => logs.push(format!("tmux unavailable: {e}")),
         }
 
-        // 2. Remove the git worktree + branch.
-        let worktree_path = format!("{WORKTREES_DIR}/{name}");
-        match worktree::remove_worktree(WORK_REPO_PATH, &worktree_path, name) {
-            Ok(()) => logs.push(format!("worktree removed")),
-            Err(e) => logs.push(format!("worktree remove failed: {e}")),
+        // 2. Remove the git worktree + branch — only if orchestra created
+        // them. Imported sessions run in their original directory, and
+        // their Claude/Codex transcripts are never deleted.
+        let owned = self.sessions.iter().find(|s| s.name == name).and_then(|s| s.owned_worktree());
+        match owned {
+            Some((repo_root, wt, branch)) => match worktree::remove_worktree(&repo_root, &wt, &branch) {
+                Ok(()) => logs.push("worktree removed".to_string()),
+                Err(e) => logs.push(format!("worktree remove failed: {e}")),
+            },
+            None => logs.push("directory left in place".to_string()),
         }
 
         // 3. Remove the state directory + .ready marker.
-        let state_dir = format!("{SESSIONS_DIR}/{name}");
-        let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
+        let state_dir = paths::sessions_dir().join(name);
+        let ready_marker = paths::sessions_dir().join(format!("{name}.ready"));
         let mut rm_ok = std::fs::remove_dir_all(&state_dir).is_ok();
         rm_ok |= std::fs::remove_file(&ready_marker).is_ok();
         if rm_ok {
             logs.push("state files removed".to_string());
+        }
+
+        // The pi conversation (~/.orchestra/pi-sessions/<id>) is kept.
+        if let Some(s) = self.sessions.iter().find(|s| s.name == name) {
+            let _ = std::fs::remove_file(paths::prompts_dir().join(format!("{}.md", s.id)));
         }
 
         // 4. Remove from the in-memory session list.
@@ -527,11 +819,21 @@ impl App {
                 self.delete_session(&name);
             }
             _ => {
-                // First press — arm.
-                let name = &self.sessions[idx].name;
+                // First press — arm. Say what would be lost.
+                let s = &self.sessions[idx];
+                let what = match s.owned_worktree() {
+                    Some((_, wt, _)) => {
+                        let base = s.base_ref.as_deref().unwrap_or("HEAD");
+                        match worktree::pending_changes(&wt, base) {
+                            Some(changes) => format!("tmux + worktree with {changes} + state"),
+                            None => "tmux + worktree + state".to_string(),
+                        }
+                    }
+                    None => "tmux + state; directory kept".to_string(),
+                };
                 self.pending_delete = Some(idx);
                 self.status_message =
-                    format!("Press x again to DELETE '{name}' (tmux + worktree + state). Any other key cancels.");
+                    format!("Press x again to DELETE '{}' ({what}). Any other key cancels.", s.name);
             }
         }
     }
@@ -618,7 +920,7 @@ fn rename_cli() -> anyhow::Result<()> {
         std::process::exit(2);
     }
     let (old, display) = (&args[0], &args[1]);
-    let paths = rename::default_paths();
+    let paths = rename::paths_for_session(old);
     let out = rename::rename_session(old, display, &paths);
     if out.new_name.is_empty() {
         eprintln!("rename failed: {}", out.logs.join("; "));
@@ -645,8 +947,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    std::fs::create_dir_all(SESSIONS_DIR).ok();
-    std::fs::create_dir_all(WORKTREES_DIR).ok();
+    std::fs::create_dir_all(paths::sessions_dir()).ok();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -715,7 +1016,27 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
     match app.mode {
         ViewMode::Tree => handle_tree_key(app, key),
         ViewMode::Agent => handle_agent_key(app, key),
+        ViewMode::Import => handle_import_key(app, key),
     }
+}
+
+fn handle_import_key(app: &mut App, key: event::KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+        KeyCode::Char('q') => return true,
+        KeyCode::Esc | KeyCode::Tab | KeyCode::Left => app.mode = ViewMode::Agent,
+        KeyCode::Up => app.import_move(-1),
+        KeyCode::Down => app.import_move(1),
+        KeyCode::Enter | KeyCode::Right => app.import_resume(),
+        KeyCode::Char('p') => app.import_fork(),
+        KeyCode::Char('a') => {
+            app.import.all_repos = !app.import.all_repos;
+            app.rescan_import();
+        }
+        KeyCode::Char('r') => app.rescan_import(),
+        _ => {}
+    }
+    false
 }
 
 fn handle_rename_key(app: &mut App, key: event::KeyEvent) -> bool {
@@ -805,6 +1126,9 @@ fn handle_alt_key(app: &mut App, key: event::KeyEvent) -> bool {
 }
 
 fn handle_tree_key(app: &mut App, key: event::KeyEvent) -> bool {
+    if key.code != KeyCode::Char('x') {
+        app.pending_tree_delete = None;
+    }
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
@@ -837,13 +1161,17 @@ fn handle_tree_key(app: &mut App, key: event::KeyEvent) -> bool {
 }
 
 fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
+    // Single-letter commands only apply to an empty input; otherwise they
+    // are text (a prompt containing "q" must not quit).
+    let empty = app.input.is_empty();
     // Any key other than `x` cancels a pending delete.
-    let is_delete_key = key.code == KeyCode::Char('x');
+    let is_delete_key = empty && key.code == KeyCode::Char('x');
     if !is_delete_key {
         app.pending_delete = None;
     }
     match key.code {
-        KeyCode::Char('q') => return true,
+        KeyCode::Char('q') if empty => return true,
+        KeyCode::Char('i') if empty => app.open_import(),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
         KeyCode::Tab | KeyCode::Esc => {
             // Return to Tree View.
@@ -852,7 +1180,7 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
             app.cursor_pos = 0;
             app.input_mode = InputMode::Dispatch;
         }
-        KeyCode::Char('x') => app.handle_delete_key_agent(),
+        KeyCode::Char('x') if empty => app.handle_delete_key_agent(),
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
         KeyCode::Enter => {
@@ -958,7 +1286,8 @@ fn upgrade() -> anyhow::Result<()> {
     let status = Command::new("bash")
         .arg("-c")
         .arg(format!(
-            "cd {ORCHESTRA_DIR} && git pull origin main && cd tui && source ~/.cargo/env && cargo build --release && {RELINK}"
+            "cd {} && git pull origin main && cd tui && source ~/.cargo/env && cargo build --release && {RELINK}",
+            paths::orchestra_checkout().display()
         ))
         .status()?;
 
@@ -981,7 +1310,78 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     match app.mode {
         ViewMode::Tree => ui_tree(f, app, area),
         ViewMode::Agent => ui_agent(f, app, area),
+        ViewMode::Import => ui_import(f, app, area),
     }
+}
+
+/// "3m" / "5h" / "2d" since a unix timestamp.
+fn ago(ts: u64) -> String {
+    let d = tree_store::unix_now().saturating_sub(ts);
+    match d {
+        0..=59 => format!("{d}s"),
+        60..=3599 => format!("{}m", d / 60),
+        3600..=86399 => format!("{}h", d / 3600),
+        _ => format!("{}d", d / 86400),
+    }
+}
+
+fn ui_import(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    let list_h = area.height.saturating_sub(3);
+    let list_area = Rect::new(area.x, area.y, area.width, list_h);
+    let footer_area = Rect::new(area.x, area.y + list_h, area.width, 3);
+    let scope = if app.import.all_repos {
+        "all directories".to_string()
+    } else {
+        app.repo
+            .as_ref()
+            .map(|r| r.root.display().to_string())
+            .unwrap_or_else(|| app.launch_dir.display().to_string())
+    };
+    let title = format!(" Import: Claude Code + Codex sessions in {scope} ({}) ", app.import.items.len());
+    // Show cwd relative to the scope root: worktree sessions read as
+    // ".claude/worktrees/foo" instead of a long absolute path.
+    let root = app.repo.as_ref().map(|r| r.root.clone());
+    let items: Vec<ListItem> = if app.import.items.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "  No sessions found here. Press a to show sessions from all directories.",
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        app.import
+            .items
+            .iter()
+            .map(|e| {
+                let (tag, color) = match e.backend {
+                    Backend::Claude => ("cc ", Color::Magenta),
+                    _ => ("cx ", Color::Cyan),
+                };
+                let managed = app.managing(e).is_some();
+                let cwd = match &root {
+                    Some(r) if !app.import.all_repos => std::path::Path::new(&e.cwd)
+                        .strip_prefix(r)
+                        .map(|p| if p.as_os_str().is_empty() { ".".to_string() } else { p.display().to_string() })
+                        .unwrap_or_else(|_| e.cwd.clone()),
+                    _ => e.cwd.clone(),
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(tag, Style::default().fg(color)),
+                    Span::styled(format!("{:>4} ", ago(e.modified)), Style::default().fg(Color::DarkGray)),
+                    Span::styled(if managed { "● " } else { "  " }, Style::default().fg(Color::Yellow)),
+                    Span::styled(format!("{:<50}", import::one_line(&e.title, 49)), Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{cwd}{}", e.git_branch.as_ref().map(|b| format!(" @{b}")).unwrap_or_default()),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+            })
+            .collect()
+    };
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(list, list_area, &mut app.import.list_state);
+    render_footer(f, app, footer_area);
 }
 
 fn ui_tree(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
@@ -1064,11 +1464,12 @@ fn ui_agent(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 SessionState::Failed => Span::styled("● ", Style::default().fg(Color::Red)),
             };
             let name = Span::styled(
-                format!("{:<24}", s.name),
+                format!("{:<28} ", import::one_line(&s.name, 27)),
                 Style::default().add_modifier(Modifier::BOLD),
             );
+            let tag = Span::styled(format!("{:<18} ", import::one_line(&s.tag(), 17)), Style::default().fg(Color::DarkGray));
             let prompt = Span::raw(s.prompt.chars().take(60).collect::<String>());
-            ListItem::new(Line::from(vec![icon, name, Span::raw(" "), prompt]))
+            ListItem::new(Line::from(vec![icon, name, Span::raw(" "), tag, prompt]))
         }).collect();
         let list_widget = List::new(items)
             .block(Block::default().borders(Borders::ALL).title(title))
@@ -1080,23 +1481,32 @@ fn ui_agent(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 }
 
 fn render_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let (input_title, placeholder) = match (app.mode, app.input_mode) {
+    let (input_title, placeholder): (String, String) = match (app.mode, app.input_mode) {
         (ViewMode::Tree, InputMode::Rename) => (
-            " Rename — Enter=commit, Esc=cancel ",
-            "Type new display name...",
+            " Rename — Enter=commit, Esc=cancel ".into(),
+            "Type new display name...".into(),
         ),
         (ViewMode::Tree, InputMode::Dispatch) => (
-            " Tree View — ←→↑↓ nav, Enter=enter, d=detail, n=rename, r=reload, x=delete, Tab=Agent ",
-            "Tree View",
+            " Tree View — ←→↑↓ nav, Enter=enter, d=detail, n=rename, r=reload, x=delete, Tab=Agent ".into(),
+            "Tree View".into(),
+        ),
+        (ViewMode::Import, _) => (
+            " Enter=resume, p=fork into pi, a=this repo/all, r=rescan, Esc=back ".into(),
+            "● = already open in orchestra (Enter attaches)".into(),
         ),
         (ViewMode::Agent, _) => {
+            let backend = app.backend_label(app.config.default_backend);
+            let target = match &app.repo {
+                Some(r) => format!("new worktree off {}", r.base_ref),
+                None => "no git repo — runs in the launch dir".to_string(),
+            };
             if app.input.is_empty() {
                 (
-                    " Type a prompt + Enter to dispatch, /agent <name> to spawn, Tab=Tree ",
-                    "Type a prompt or /agent <name>",
+                    format!(" Prompt + Enter → {backend}, {target} · i=import · Tab=Tree "),
+                    "/claude|/codex|/pi <prompt>, /backend, /model, /import, /agent, /rename".into(),
                 )
             } else {
-                (" Press Enter to dispatch ", "")
+                (" Press Enter to dispatch ".into(), String::new())
             }
         }
     };
@@ -1106,7 +1516,7 @@ fn render_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
     } else if app.mode == ViewMode::Tree && app.tree.nodes.is_empty() {
         "No tree state yet"
     } else {
-        placeholder
+        placeholder.as_str()
     };
 
     let input = Paragraph::new(app.input.as_str()).block(
@@ -1130,14 +1540,16 @@ mod tests {
     use super::*;
 
     fn session(name: &str, state: SessionState) -> Session {
-        Session {
-            name: name.to_string(),
-            prompt: format!("prompt for {name}"),
-            worktree_path: format!("/tmp/{name}"),
-            created_at: 1000,
-            last_activity: 1000,
-            state,
-        }
+        let mut s = Session::new(
+            name.to_string(),
+            format!("prompt for {name}"),
+            format!("/tmp/{name}"),
+            Backend::Pi,
+        );
+        s.created_at = 1000;
+        s.last_activity = 1000;
+        s.state = state;
+        s
     }
 
     #[test]
@@ -1220,8 +1632,8 @@ mod tests {
         // Verify the paths delete_session constructs match the session
         // save conventions (SESSIONS_DIR/<name> + .ready marker).
         let name = "fix-bug-1234";
-        let state_dir = format!("{SESSIONS_DIR}/{name}");
-        let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
+        let state_dir = paths::sessions_dir().join(name).to_string_lossy().to_string();
+        let ready_marker = paths::sessions_dir().join(format!("{name}.ready")).to_string_lossy().to_string();
         assert!(state_dir.ends_with("/.orchestra/sessions/fix-bug-1234"));
         assert!(ready_marker.ends_with("/.orchestra/sessions/fix-bug-1234.ready"));
     }

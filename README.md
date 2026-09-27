@@ -6,8 +6,9 @@ with a terminal UI, git worktree isolation, and OpenClaw as the gateway.
 ## Current functionality
 
 - **TUI** (`orchestra`) — terminal UI for dispatching and navigating
-  parallel pi coding agent sessions, with automatic git worktree isolation per
-  session.
+  parallel coding agent sessions (pi, Claude Code, or Codex), each in its own
+  git worktree. It can also import your existing Claude Code and Codex
+  sessions.
 - **Main box** — long-lived VM running OpenClaw + pi + the TUI, launched via
   SkyPilot.
 - **Work agent** — OpenClaw agent persona for work tasks, with its own workspace
@@ -17,28 +18,90 @@ with a terminal UI, git worktree isolation, and OpenClaw as the gateway.
 
 ### Dispatch a coding task
 ```
+$ cd ~/code/my-repo
 $ orchestra
 ```
 Type a prompt in the dispatch input, press Enter. A new session starts in its
-own git worktree (branched off latest master of your work repo). Pi receives the
-prompt and begins working.
+own git worktree of the repo you launched from, branched off the latest
+`origin/<default-branch>`. The agent receives the prompt and begins working.
+
+By default the agent is pi. To pick another one for a single session, prefix
+the prompt:
+
+- `/claude <prompt>` runs Claude Code
+- `/codex <prompt>` runs Codex
+- `/pi <prompt>` runs pi
+
+`/backend claude` (or `codex`, `pi`) changes the default for later prompts.
+`/model <name>` sets the model new sessions of the default backend start
+with, `/model` shows it, and `/model -` goes back to the backend's own
+default. For pi, the name is checked against `pi --list-models`, so it can be
+any model from pi's built-in providers or from a custom provider in
+`~/.pi/agent/models.json` (see [Model config](#model-config)). Both settings
+are saved in `~/.orchestra/config.json`.
 
 ### Navigate between sessions
 - `↑` / `↓` — move between sessions in the list
 - `→` or `Enter` (on empty input) — attach to the selected session (full-screen
   pi interactive mode)
 - `←` (on empty input) — detach back to the session list
-- `q` or `Ctrl+C` — quit
+- `i` (on empty input) — open the session importer
+- `x` twice (on empty input) — delete the selected session
+- `q` (on empty input) or `Ctrl+C` — quit
 
 ### Work in parallel
-Each session runs in its own git worktree at `~/orchestra/worktrees/<name>/` on
-branch `worktree-<name>`. Multiple sessions can work simultaneously without
-conflicting with each other or with your main checkout.
+Worktrees follow the same layout Claude Code uses for `.claude/worktrees/`:
+
+```
+<repo>/.orchestra/worktrees/<name>/    branch worktree-<name>
+```
+
+- The repo is the git repo containing the directory you run `orchestra` from.
+  Running it from inside a worktree still uses the main checkout. If the
+  directory is not in a git repo, orchestra uses `ORCHESTRA_WORK_REPO` from the
+  environment or `~/.orchestra/env`. The main box sets this to its work repo
+  because you land in `~` after `sky ssh`. With neither, sessions run in the
+  launch directory without a worktree.
+- New worktrees branch from `origin/<default-branch>` (the remote's HEAD, so
+  `main` or `master` is detected, not assumed) after a `git fetch`. Your main
+  checkout is never pulled or switched, so it can be dirty or on a feature
+  branch.
+- `.orchestra/` is added to the repo's `.git/info/exclude`, so worktrees never
+  show up in `git status` and no tracked file is changed.
+- Gitignored files listed in a `.worktreeinclude` file at the repo root (for
+  example `.env`) are copied into each new worktree. This uses the same file
+  format as Claude Code.
+- Deleting a session removes its worktree and branch. The confirmation message
+  says first if the worktree has uncommitted files or commits that are not on
+  the base branch.
+
+### Import Claude Code and Codex sessions
+Press `i` in Agent View (or type `/import`) to list your Claude Code sessions
+(`~/.claude/projects/`) and Codex sessions (`~/.codex/sessions/`) whose
+directory is inside the current repo, including their worktrees. Press `a` to
+show sessions from every directory.
+
+- `Enter` resumes the session with its own CLI (`claude --resume <id>` or
+  `codex resume <id>`) in its original directory, inside an orchestra tmux
+  session. A `●` marks sessions that are already open in orchestra; `Enter` on
+  one of those attaches to it.
+- `p` forks the conversation into a new pi session, so you can continue it
+  with any model pi supports. The fork gets its own worktree, starting from the
+  commit the original session is on (uncommitted edits do not carry over). Tool
+  calls and their output are kept as text, capped in length, and history from
+  before the last compaction is left out, which matches what the original agent
+  itself would see.
+
+Deleting an imported session only stops its tmux session. Its directory and
+its Claude Code or Codex transcript are left alone.
 
 ### Resume after disconnect
 Session state is persisted to `~/.orchestra/sessions/<name>/state.json`. On TUI
 restart, previous sessions appear in the list (marked as Idle). Attach to resume
-the pi conversation where you left off.
+the conversation where you left off. If the agent process exits, it is
+restarted in the same conversation: pi with `--continue` on the session's own
+conversation directory (`~/.orchestra/pi-sessions/<id>/`), Claude Code with
+`--resume`, and Codex with `resume`.
 
 ### Rename a session
 Renaming moves the session's *whole* identity, not just its label:
@@ -52,11 +115,9 @@ A rename updates the tmux session, the git worktree dir + branch, the state
 dir (`~/.orchestra/sessions/`), and the tree-store node id — so the
 collector keeps matching the node instead of creating a duplicate. The label
 keeps your raw text (`My Session`) while the underlying name is sanitized
-(`my-session`).
-
-Note: a *running* pi process keeps its original `--name` (that key holds its
-conversation history), so its pi-side session history stays under the old
-name even though tmux/worktree/etc. are renamed.
+(`my-session`). The pi conversation is stored under the session's id, which
+never changes, so it is unaffected. Imported sessions keep their directory;
+only orchestra's own names change.
 
 ## Architecture
 
@@ -65,17 +126,18 @@ You ──SSH──▶  MAIN BOX (sky launch main-box.yaml)
                 orchestra (ratatui.rs terminal app)
                   · dispatch input → new session per prompt
                   · session list with state icons
-                  · attach → full-screen pi interactive
-                  · per-session git worktree off origin/master
+                  · attach → full-screen agent (pi / claude / codex)
+                  · per-session git worktree off origin/<default>
+                  · import Claude Code / Codex sessions
                       │
                       ▼
-                WORK REPO (git clone)
+                WORK REPO (git clone, $ORCHESTRA_WORK_REPO)
                   ~/work-repos/prototype/
-                  └── worktrees/<session-name>/  (branch: worktree-<name>)
+                  └── .orchestra/worktrees/<name>/  (branch: worktree-<name>)
 
-                pi coding agent (per session)
-                  · models.json → any OpenAI-compatible endpoint
-                  · session saved by name for multi-turn continuity
+                coding agent (per session, in tmux)
+                  · pi: built-in providers + models.json custom providers
+                  · Claude Code / Codex: their own CLIs and logins
 
                 OpenClaw gateway (daemon, persistent)
                   · model = configured in openclaw.json
@@ -86,7 +148,8 @@ You ──SSH──▶  MAIN BOX (sky launch main-box.yaml)
 
 | Component | Role |
 |-----------|------|
-| [pi](https://pi.dev) | Coding agent harness; runs per-session in a worktree |
+| [pi](https://pi.dev) | Default coding agent harness; runs per-session in a worktree |
+| [Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex) | Optional session backends (`/claude`, `/codex`), used through their own CLIs |
 | [OpenClaw](https://openclaw.ai) | Gateway + agent personas + skills |
 | [SkyPilot](https://skypilot.co) | Compute orchestration for the main box |
 | [ratatui.rs](https://ratatui.rs) | Terminal UI framework |
@@ -166,8 +229,12 @@ orchestra/
 │   ├── Cargo.toml                  # Rust dependencies
 │   └── src/
 │       ├── main.rs                 # TUI entrypoint, key handling, rendering
-│       ├── session.rs              # Session state, pi spawn, persistence
-│       └── worktree.rs             # Git worktree create/remove
+│       ├── session.rs              # Session state, agent launch commands, persistence
+│       ├── repo.rs                 # Find the launch repo and its default branch
+│       ├── worktree.rs             # Git worktree create/remove, .worktreeinclude
+│       ├── import.rs               # Find Claude Code / Codex sessions on disk
+│       ├── convert.rs              # Convert a transcript into a pi session
+│       └── config.rs               # /backend and /model defaults
 ├── pi/
 │   └── models.json.example         # Generic OpenAI-compatible provider template
 ├── openclaw/
@@ -189,10 +256,14 @@ providers validate `Authorization: Bearer` and ignore `x-api-key`; the OpenAI
 client sends Bearer natively. See `pi/models.json.example`.
 
 **Multiple models:** list as many models as you want under the provider in
-`models.json`. Sessions start on pi's default model (or `ORCHESTRA_MODEL` if
-set in `~/.orchestra/env`) and you switch anytime with pi's `/model` command —
-the switch survives pi restarts. `models.json` reloads every time you open
-`/model`, so edits on the box take effect immediately.
+`models.json`. pi also has built-in providers (Anthropic, OpenAI, OpenRouter,
+Gemini, and others) that work with their usual API key env vars or pi's
+`/login`. A new pi session starts on, in order: the model set with orchestra's
+`/model`, else `ORCHESTRA_PROVIDER` / `ORCHESTRA_MODEL` from
+`~/.orchestra/env`, else pi's own default. You can switch anytime with pi's
+`/model` command inside the session, and the switch survives pi restarts.
+`models.json` reloads every time you open `/model`, so edits on the box take
+effect immediately.
 
 The API key is read from the `ORCHESTRA_API_KEY` env var using the `!printf`
 command syntax: `"apiKey": "!printf %s $ORCHESTRA_API_KEY"`. This avoids
@@ -218,7 +289,6 @@ via the `bindings` field — see [OpenClaw agent config docs](https://docs.openc
 - **Session summaries** — one-line activity summary per session, refreshed
   periodically (like `claude agents`)
 - **Session peek** — preview a session's recent output without attaching
-- **Worktree cleanup** — auto-remove worktrees when sessions complete
 - **Todo skill** — maintain work and personal todo lists
 - **Context routing** — automatically route work vs personal queries to the
   right agent

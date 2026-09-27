@@ -1,15 +1,13 @@
-// Session management — each session is a pi process running inside a tmux
-// session in a worktree. tmux gives us attach/detach for free.
+// Session management — each session is a coding agent (pi, Claude Code, or
+// Codex) running inside a tmux session. tmux gives us attach/detach for free.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-const SESSIONS_DIR: &str = "/home/sky/.orchestra/sessions";
-const ENV_FILE: &str = "/home/sky/.orchestra/env";
-const SKILLS_DIR: &str = "/home/sky/.orchestra/skills";
+use crate::paths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
@@ -21,199 +19,351 @@ pub enum SessionState {
     Failed,
 }
 
+/// Which agent CLI runs in the session's tmux pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    #[default]
+    Pi,
+    Claude,
+    Codex,
+}
+
+impl Backend {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "pi" => Some(Self::Pi),
+            "claude" | "cc" | "claude-code" => Some(Self::Claude),
+            "codex" | "cx" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pi => "pi",
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+}
+
+/// How a session's conversation starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase", tag = "kind")]
+pub enum Origin {
+    /// Dispatched from orchestra with a fresh prompt.
+    #[default]
+    New,
+    /// An existing Claude Code / Codex session, resumed with its own CLI.
+    Resumed,
+    /// A Claude Code / Codex transcript converted into a pi session.
+    Forked { from: String },
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
     pub name: String,
     pub prompt: String,
+    /// The session's working directory. For dispatched sessions in a repo
+    /// this is the orchestra-owned worktree.
     pub worktree_path: String,
     pub created_at: u64,
     pub last_activity: u64,
     pub state: SessionState,
+    /// Stable id; never changes on rename. Keys the pi conversation dir and
+    /// is the Claude Code session id for claude sessions orchestra starts.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub backend: Backend,
+    #[serde(default)]
+    pub origin: Origin,
+    /// Model to start with (`provider/id` for pi, `--model` for the others).
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Main checkout of the repo the worktree belongs to.
+    #[serde(default)]
+    pub repo_root: Option<String>,
+    /// Ref the worktree branched from (for the "unmerged commits" check).
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    /// Branch orchestra created for this session, if it owns the worktree.
+    /// Imported sessions run in someone else's directory and leave it alone.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Claude Code / Codex session id for resumed sessions.
+    #[serde(default)]
+    pub external_id: Option<String>,
 }
 
 impl Session {
-    pub fn new(name: String, prompt: String, worktree_path: String) -> Self {
+    pub fn new(name: String, prompt: String, cwd: String, backend: Backend) -> Self {
         let now = unix_now();
         Self {
             name,
             prompt,
-            worktree_path,
+            worktree_path: cwd,
             created_at: now,
             last_activity: now,
             state: SessionState::Initializing,
+            id: uuid::Uuid::new_v4().to_string(),
+            backend,
+            origin: Origin::New,
+            model: None,
+            repo_root: None,
+            base_ref: None,
+            branch: None,
+            external_id: None,
         }
     }
 
-    /// Path to the readiness marker file. The tmux session touches this
-    /// file when print mode finishes and interactive pi starts.
-    fn ready_path(&self) -> String {
-        format!("{SESSIONS_DIR}/{}.ready", self.name)
+    /// Short tag for the session list.
+    pub fn tag(&self) -> String {
+        let b = match self.backend {
+            Backend::Pi => "pi",
+            Backend::Claude => "cc",
+            Backend::Codex => "cx",
+        };
+        match &self.model {
+            Some(m) => format!("{b}:{}", m.rsplit('/').next().unwrap_or(m)),
+            None => b.to_string(),
+        }
     }
 
-    /// Check if the session is ready to attach (interactive pi is running).
+    /// Whether deleting this session should remove its worktree + branch.
+    /// Sessions from before per-repo worktrees don't record a branch but
+    /// always owned `~/orchestra/worktrees/<name>`.
+    pub fn owned_worktree(&self) -> Option<(PathBuf, PathBuf, String)> {
+        let wt = PathBuf::from(&self.worktree_path);
+        if let (Some(repo), Some(branch)) = (&self.repo_root, &self.branch) {
+            return Some((PathBuf::from(repo), wt, branch.clone()));
+        }
+        if self.origin == Origin::New && wt.starts_with(paths::legacy_worktrees_dir()) {
+            return Some((paths::legacy_repo(), wt, format!("worktree-{}", self.name)));
+        }
+        None
+    }
+
+    pub fn pi_session_dir(&self) -> PathBuf {
+        paths::pi_sessions_dir().join(&self.id)
+    }
+
+    fn ready_path(&self) -> PathBuf {
+        paths::sessions_dir().join(format!("{}.ready", self.name))
+    }
+
+    /// Check if the session is ready to attach (the agent UI has rendered).
     pub fn is_ready(&self) -> bool {
-        std::path::Path::new(&self.ready_path()).exists()
+        self.ready_path().exists()
     }
 
     /// Refresh state by checking if the tmux session is still alive and
     /// whether the readiness marker exists.
     pub fn refresh_state(&mut self) {
-        let alive = Command::new("tmux")
-            .arg("has-session")
-            .arg("-t")
-            .arg(&self.name)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if !alive {
+        if !tmux_alive(&self.name) {
             // tmux session ended — the process finished
             if self.state != SessionState::Failed {
                 self.state = SessionState::Completed;
             }
             return;
         }
-
-        // tmux is alive — check if interactive pi has started yet.
-        if self.is_ready() {
-            self.state = SessionState::Working;
+        self.state = if self.is_ready() {
+            SessionState::Working
         } else {
-            self.state = SessionState::Initializing;
-        }
+            SessionState::Initializing
+        };
     }
 }
 
-/// Concatenate all skill files from ~/.orchestra/skills/*.md into a temp
-/// file and return its path. Returns None if no skills exist.
-fn load_skills_prompt() -> Option<String> {
-    let mut content = String::new();
-    let mut entries: Vec<_> = std::fs::read_dir(SKILLS_DIR).ok()?.flatten().collect();
-    entries.sort_by_key(|e| e.path());
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().is_none_or(|ext| ext != "md") {
-            continue;
-        }
-        let name = path.file_name()?.to_string_lossy();
-        if name == "README.md" {
-            continue;
-        }
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            content.push_str(&text);
-            content.push_str("\n\n---\n\n");
+/// Single-quote a string for bash.
+pub fn sq(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Tells agents where orchestra skills live. Replaces the AGENTS.md that
+/// used to be written into every worktree (which showed up as an
+/// untracked file and clobbered any AGENTS.md the repo already had).
+const ORCHESTRA_NOTE: &str = "\
+# Orchestra Session
+
+You are running as an orchestra session. When asked to \"write a skill\",
+write it to `~/.orchestra/skills/<name>.md` — the only location orchestra
+loads skills from — then commit and push it:
+
+    cd ~/orchestra && git add skills/ && git commit -m \"skill: <name>\" && git push origin main
+
+Do not confuse these with any skills directory the current repo defines.
+";
+
+/// Write the orchestra note plus all skills from ~/.orchestra/skills/*.md
+/// into one file for --append-system-prompt. Returns its path.
+fn write_system_prompt(id: &str) -> Option<PathBuf> {
+    let mut content = String::from(ORCHESTRA_NOTE);
+    if let Ok(rd) = std::fs::read_dir(paths::skills_dir()) {
+        let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            if path.extension().is_none_or(|ext| ext != "md")
+                || path.file_name().is_some_and(|n| n == "README.md")
+            {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                content.push_str("\n---\n\n");
+                content.push_str(&text);
+            }
         }
     }
-    if content.is_empty() {
-        return None;
-    }
-    // Write to a temp file — pi reads it via --append-system-prompt.
-    let path = format!("/tmp/orchestra-skills-{unix}.md", unix = unix_now());
-    std::fs::write(&path, &content).ok()?;
+    let dir = paths::prompts_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{id}.md"));
+    std::fs::write(&path, content).ok()?;
     Some(path)
 }
 
-/// Spawn pi inside a detached tmux session. Interactive pi starts
-/// immediately and the initial prompt is sent as keystrokes after a
-/// short delay (to let pi's UI render). This way the session becomes
-/// attachable in ~3 seconds and the user can watch pi think in real
-/// time, rather than waiting for print mode to finish.
-///
-/// If pi exits (crash, Ctrl+C, etc.), a restart loop relaunches it.
-/// pi persists conversation history by --name, so restarts resume
-/// the existing conversation.
-///
-/// Left arrow and Ctrl+C are bound to detach-client so the user can
-/// return to the orchestra TUI without killing pi. Use Escape to
-/// interrupt pi operations.
-pub fn spawn_pi(name: &str, worktree_path: &str, initial_prompt: &str) -> std::io::Result<()> {
-    // Escape single quotes for bash — the only char that needs escaping
-    // inside single-quoted strings.
-    let escaped = initial_prompt.replace('\'', "'\\''");
+/// The shell commands tmux runs: `first` once, then `restart` in a loop
+/// whenever the agent exits, so a crash or /exit resumes the same
+/// conversation instead of starting over.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Launch {
+    pub first: String,
+    pub restart: String,
+}
 
-    // Concatenate all skill files into a temp file and pass via
-    // --append-system-prompt so sessions load skills automatically.
-    let skills_prompt = load_skills_prompt();
-    let skills_flag = match &skills_prompt {
-        Some(path) => format!("--append-system-prompt {path}"),
-        None => String::new(),
+pub fn launch_commands(sess: &Session, system_prompt: Option<&Path>) -> Launch {
+    let prompt_arg = if sess.prompt.trim().is_empty() || sess.origin != Origin::New {
+        String::new()
+    } else {
+        format!(" {}", sq(&sess.prompt))
     };
+    match sess.backend {
+        Backend::Pi => {
+            let dir = sq(&sess.pi_session_dir().to_string_lossy());
+            let sp = system_prompt
+                .map(|p| format!(" --append-system-prompt {}", sq(&p.to_string_lossy())))
+                .unwrap_or_default();
+            // An explicit model wins; otherwise ORCHESTRA_PROVIDER /
+            // ORCHESTRA_MODEL from ~/.orchestra/env pin the initial model,
+            // and with neither pi uses its own default. Restarts pass no
+            // model so a /model switch inside pi survives them.
+            let model = match &sess.model {
+                Some(m) => format!(" --model {}", sq(m)),
+                None => " ${ORCHESTRA_PROVIDER:+--provider \"$ORCHESTRA_PROVIDER\"} \
+                         ${ORCHESTRA_MODEL:+--model \"$ORCHESTRA_MODEL\"}"
+                    .to_string(),
+            };
+            let cont = if sess.origin == Origin::New { "" } else { " --continue" };
+            Launch {
+                first: format!("pi --session-dir {dir}{cont}{model}{sp}{prompt_arg}"),
+                restart: format!("pi --session-dir {dir} --continue{sp}"),
+            }
+        }
+        Backend::Claude => {
+            let model = sess.model.as_ref().map(|m| format!(" --model {}", sq(m))).unwrap_or_default();
+            let sp = system_prompt
+                .map(|p| format!(" --append-system-prompt \"$(cat {})\"", sq(&p.to_string_lossy())))
+                .unwrap_or_default();
+            match &sess.external_id {
+                Some(ext) => {
+                    let resume = format!("claude --resume {}{model}", sq(ext));
+                    Launch { first: resume.clone(), restart: resume }
+                }
+                None => Launch {
+                    first: format!("claude --session-id {}{model}{sp}{prompt_arg}", sq(&sess.id)),
+                    restart: format!("claude --resume {}{model}", sq(&sess.id)),
+                },
+            }
+        }
+        Backend::Codex => {
+            let model = sess.model.as_ref().map(|m| format!(" -m {}", sq(m))).unwrap_or_default();
+            match &sess.external_id {
+                Some(ext) => {
+                    let resume = format!("codex resume {}{model}", sq(ext));
+                    Launch { first: resume.clone(), restart: resume }
+                }
+                // Codex picks its own session id. The worktree is unique to
+                // this session, so "most recent in this cwd" is ours.
+                None => Launch {
+                    first: format!("codex{model}{prompt_arg}"),
+                    restart: format!("codex resume --last{model}"),
+                },
+            }
+        }
+    }
+}
 
-    let ready_marker = format!("{SESSIONS_DIR}/{name}.ready");
-    // Start interactive pi in the foreground. A background subshell
-    // polls the tmux pane until pi's UI is rendered (detected by the
-    // context-usage string "%/<ctx>" or "?/<ctx>" in the footer —
-    // model-agnostic), then touches the ready marker and sends the
-    // prompt as keystrokes.
-    //
-    // Model selection: ORCHESTRA_PROVIDER / ORCHESTRA_MODEL (from
-    // ~/.orchestra/env) optionally pin the INITIAL model only. The
-    // restart loop passes no model flags, so a /model switch inside
-    // the session survives pi restarts. With no env vars set, pi
-    // uses its default model from models.json — same as normal pi.
+/// Spawn the session's agent inside a detached tmux session.
+///
+/// A background subshell polls the pane until the agent UI has rendered,
+/// then touches the ready marker so the TUI shows the session as
+/// attachable. pi's footer shows context usage ("%/<ctx>" or "?/<ctx>");
+/// Claude Code and Codex are considered up once the pane has content.
+///
+/// Left arrow (at column 0) and Ctrl+C are bound to detach-client so the
+/// user can return to the orchestra TUI without killing the agent. Use
+/// Escape to interrupt agent operations.
+pub fn spawn(sess: &Session) -> std::io::Result<()> {
+    let system_prompt = match sess.backend {
+        Backend::Pi | Backend::Claude => write_system_prompt(&sess.id),
+        Backend::Codex => None,
+    };
+    let launch = launch_commands(sess, system_prompt.as_deref());
+    let name = &sess.name;
+    let ready_marker = sq(&sess.ready_path().to_string_lossy());
+    let env_file = sq(&paths::env_file().to_string_lossy());
+    let ready_check = match sess.backend {
+        Backend::Pi => format!("tmux capture-pane -t {name} -p 2>/dev/null | grep -qE '[%?]/'"),
+        _ => format!("[ \"$(tmux capture-pane -t {name} -p 2>/dev/null | grep -c .)\" -ge 3 ]"),
+    };
     let cmd_str = format!(
-        "set -a; source {ENV_FILE}; set +a; (
+        "[ -f {env_file} ] && {{ set -a; . {env_file}; set +a; }}
+        (
             for i in $(seq 1 30); do
-                if tmux capture-pane -t {name} -p 2>/dev/null | grep -qE '[%?]/'; then
-                    break
-                fi
+                if {ready_check}; then break; fi
                 sleep 0.5
             done
             touch {ready_marker}
-            tmux send-keys -t {name} -l '{escaped}'
-            tmux send-keys -t {name} Enter
         ) &
-        PI_MODEL_FLAGS=\"\"
-        [ -n \"${{ORCHESTRA_PROVIDER:-}}\" ] && PI_MODEL_FLAGS=\"$PI_MODEL_FLAGS --provider $ORCHESTRA_PROVIDER\"
-        [ -n \"${{ORCHESTRA_MODEL:-}}\" ] && PI_MODEL_FLAGS=\"$PI_MODEL_FLAGS --model $ORCHESTRA_MODEL\"
-        pi --name {name} $PI_MODEL_FLAGS {skills_flag}; while true; do pi --name {name} {skills_flag}; sleep 1; done"
+        {first}
+        while true; do sleep 1; {restart}; done",
+        first = launch.first,
+        restart = launch.restart,
     );
 
     // Write ~/.tmux.conf if it doesn't exist. The tmux server reads this
     // file on startup (before creating any sessions), so settings like
     // default-terminal are applied before the session's PTY is created.
-    // This is necessary because `tmux start-server` exits immediately
-    // when there are no sessions — all set/bind-key commands fail silently.
     // The main-box has TERM=dumb, so without this, tmux defaults to
-    // "screen" (8 colors) causing weird highlighting in pi's output.
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/sky".to_string());
-    let tmux_conf = format!("{home}/.tmux.conf");
-    if !std::path::Path::new(&tmux_conf).exists() {
+    // "screen" (8 colors) causing weird highlighting in agent output.
+    let tmux_conf = paths::home().join(".tmux.conf");
+    if !tmux_conf.exists() {
         std::fs::write(&tmux_conf, "\
 set -g default-terminal \"screen-256color\"
 set -ga terminal-overrides \",*256col*:Tc\"
 set -g extended-keys on
 set -g remain-on-exit on
 # Left detaches only when cursor is at column 0, otherwise passes through
-# to pi so the user can move the cursor left within the text input.
+# to the agent so the user can move the cursor left within the text input.
 bind-key -n Left if-shell -F '#{==:#{cursor_x},0}' detach-client 'send-keys Left'
 bind-key -n C-c detach-client
 ")?;
     }
 
-    // Create the session — this starts the tmux server if it's not
-    // already running. The server reads ~/.tmux.conf on startup, so
-    // terminal settings and keybindings are applied before the session.
     let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", name, "-c", worktree_path])
+        .args(["new-session", "-d", "-s", name, "-c", &sess.worktree_path])
         .arg("bash")
         .arg("-c")
         .arg(&cmd_str)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
-
     if !status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "tmux new-session failed",
-        ));
+        return Err(std::io::Error::other("tmux new-session failed"));
     }
 
     // Set keybindings after session creation as a fallback, in case
     // the tmux server was already running without ~/.tmux.conf.
-    // Left detaches only at column 0, otherwise passes through to pi.
     Command::new("tmux")
         .args(["bind-key", "-n", "Left", "if-shell", "-F", "#{==:#{cursor_x},0}", "detach-client", "send-keys", "Left"])
         .stdout(Stdio::null())
@@ -224,17 +374,16 @@ bind-key -n C-c detach-client
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
-
     Ok(())
 }
 
 pub fn load_sessions() -> Vec<Session> {
     let mut sessions = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(SESSIONS_DIR) {
+    if let Ok(entries) = std::fs::read_dir(paths::sessions_dir()) {
         for entry in entries.flatten() {
             let path = entry.path().join("state.json");
             if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(sess) = serde_json::from_str::<Session>(&content) {
+                if let Ok(mut sess) = serde_json::from_str::<Session>(&content) {
                     // Skip sessions whose tmux is dead — their state files
                     // are stale. Clean up the state dir + .ready marker so
                     // they don't accumulate. This prevents the TUI from
@@ -242,6 +391,9 @@ pub fn load_sessions() -> Vec<Session> {
                     if !tmux_alive(&sess.name) {
                         remove_session_state(&sess.name);
                         continue;
+                    }
+                    if sess.id.is_empty() {
+                        sess.id = uuid::Uuid::new_v4().to_string();
                     }
                     sessions.push(sess);
                 }
@@ -267,7 +419,7 @@ pub fn save_sessions(sessions: &[Session]) {
 }
 
 /// Check if a tmux session is alive.
-fn tmux_alive(name: &str) -> bool {
+pub fn tmux_alive(name: &str) -> bool {
     Command::new("tmux")
         .arg("has-session")
         .arg("-t")
@@ -280,11 +432,10 @@ fn tmux_alive(name: &str) -> bool {
 }
 
 /// Remove a session's state directory + .ready marker from disk.
-fn remove_session_state(name: &str) {
-    let dir = PathBuf::from(SESSIONS_DIR).join(name);
-    let ready = PathBuf::from(SESSIONS_DIR).join(format!("{name}.ready"));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&ready);
+pub fn remove_session_state(name: &str) {
+    let dir = paths::sessions_dir();
+    let _ = std::fs::remove_dir_all(dir.join(name));
+    let _ = std::fs::remove_file(dir.join(format!("{name}.ready")));
 }
 
 /// Save a single session's state to disk. Called immediately after
@@ -292,11 +443,10 @@ fn remove_session_state(name: &str) {
 /// TUI process is the control plane and can be killed at any time,
 /// but the session state must persist so a restarted TUI can find it.
 pub fn save_session(sess: &Session) {
-    let dir = PathBuf::from(SESSIONS_DIR).join(&sess.name);
+    let dir = paths::sessions_dir().join(&sess.name);
     std::fs::create_dir_all(&dir).ok();
-    let path = dir.join("state.json");
     if let Ok(json) = serde_json::to_string_pretty(sess) {
-        std::fs::write(path, json).ok();
+        std::fs::write(dir.join("state.json"), json).ok();
     }
 }
 
@@ -307,13 +457,7 @@ pub fn generate_name(prompt: &str) -> String {
         .join("-")
         .to_lowercase()
         .chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c
-            } else {
-                '-'
-            }
-        })
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
     // Ensure uniqueness with a short suffix.
     let suffix = unix_now() % 10000;
@@ -325,4 +469,103 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sess(backend: Backend, prompt: &str) -> Session {
+        let mut s = Session::new("n".into(), prompt.into(), "/w".into(), backend);
+        s.id = "ID".into();
+        s
+    }
+
+    #[test]
+    fn legacy_state_json_still_loads() {
+        let old = r#"{"name":"a","prompt":"p","worktree_path":"/home/sky/orchestra/worktrees/a",
+            "created_at":1,"last_activity":1,"state":"Working"}"#;
+        let s: Session = serde_json::from_str(old).unwrap();
+        assert_eq!(s.backend, Backend::Pi);
+        assert_eq!(s.origin, Origin::New);
+        assert!(s.branch.is_none());
+    }
+
+    #[test]
+    fn pi_uses_session_dir_not_name() {
+        let l = launch_commands(&sess(Backend::Pi, "fix it's bug"), Some(Path::new("/sp.md")));
+        assert!(l.first.starts_with("pi --session-dir '"), "{}", l.first);
+        assert!(l.first.contains("/pi-sessions/ID'"));
+        assert!(l.first.ends_with(" 'fix it'\\''s bug'"), "{}", l.first);
+        assert!(l.first.contains("--append-system-prompt '/sp.md'"));
+        assert!(l.first.contains("ORCHESTRA_MODEL"));
+        assert!(!l.first.contains("--continue"));
+        assert!(l.restart.contains("--continue") && !l.restart.contains("fix"));
+        assert!(!l.first.contains("--name"));
+    }
+
+    #[test]
+    fn pi_explicit_model_and_fork() {
+        let mut s = sess(Backend::Pi, "hello");
+        s.model = Some("openrouter/qwen/qwen3".into());
+        s.origin = Origin::Forked { from: "claude:abc".into() };
+        let l = launch_commands(&s, None);
+        assert!(l.first.contains("--continue --model 'openrouter/qwen/qwen3'"), "{}", l.first);
+        assert!(!l.first.contains("hello"), "forked sessions don't re-send the prompt");
+        assert!(!l.restart.contains("--model"));
+    }
+
+    #[test]
+    fn claude_new_and_resumed() {
+        let l = launch_commands(&sess(Backend::Claude, "do x"), Some(Path::new("/sp.md")));
+        assert_eq!(
+            l.first,
+            "claude --session-id 'ID' --append-system-prompt \"$(cat '/sp.md')\" 'do x'"
+        );
+        assert_eq!(l.restart, "claude --resume 'ID'");
+
+        let mut r = sess(Backend::Claude, "");
+        r.origin = Origin::Resumed;
+        r.external_id = Some("abc".into());
+        let l = launch_commands(&r, None);
+        assert_eq!(l.first, "claude --resume 'abc'");
+        assert_eq!(l.first, l.restart);
+    }
+
+    #[test]
+    fn codex_new_and_resumed() {
+        let mut s = sess(Backend::Codex, "do y");
+        s.model = Some("gpt-6".into());
+        let l = launch_commands(&s, None);
+        assert_eq!(l.first, "codex -m 'gpt-6' 'do y'");
+        assert_eq!(l.restart, "codex resume --last -m 'gpt-6'");
+
+        let mut r = sess(Backend::Codex, "");
+        r.origin = Origin::Resumed;
+        r.external_id = Some("019a".into());
+        assert_eq!(launch_commands(&r, None).first, "codex resume '019a'");
+    }
+
+    #[test]
+    fn owned_worktree_rules() {
+        let mut s = sess(Backend::Pi, "p");
+        assert!(s.owned_worktree().is_none(), "no repo, no branch");
+        s.repo_root = Some("/r".into());
+        s.branch = Some("worktree-n".into());
+        assert_eq!(s.owned_worktree().unwrap().2, "worktree-n");
+
+        let mut legacy = sess(Backend::Pi, "p");
+        legacy.worktree_path = paths::legacy_worktrees_dir().join("n").to_string_lossy().into();
+        assert!(legacy.owned_worktree().is_some());
+        legacy.origin = Origin::Resumed;
+        assert!(legacy.owned_worktree().is_none());
+    }
+
+    #[test]
+    fn tag_shows_backend_and_model() {
+        let mut s = sess(Backend::Claude, "p");
+        assert_eq!(s.tag(), "cc");
+        s.model = Some("anthropic/claude-opus-5-5".into());
+        assert_eq!(s.tag(), "cc:claude-opus-5-5");
+    }
 }

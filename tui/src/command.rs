@@ -1,13 +1,21 @@
 // command.rs — Parse slash-commands from the dispatch input.
 //
 // The Agent View dispatch input accepts either a plain prompt (dispatch a
-// new session) or a `/`-command (Design §9). Currently only `/agent` is
-// recognized; `/session`, `/model`, etc. can be added later.
+// new session with the default backend) or a `/`-command (Design §9):
+//
+//   /pi|/claude|/codex <prompt>   dispatch with that backend, once
+//   /backend <pi|claude|codex>    set the default backend
+//   /model [<model>]              set (or show) the default model for the
+//                                 default backend; `/model -` clears it
+//   /import                       browse Claude Code / Codex sessions
+//   /agent <name>, /rename <name>
 //
 // Parsing is intentionally strict: a `/agent` command must have a name,
 // and the name must be a valid SkyPilot cluster suffix (alphanumeric +
 // hyphens). Anything else falls through to `Other` so the caller can show
 // an error or treat it as a plain prompt.
+
+use crate::session::Backend;
 
 /// A parsed dispatch command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +25,14 @@ pub enum DispatchCommand {
     SpawnAgent { name: String },
     /// `/rename <new name>` — rename the selected node (alternative to `n`).
     Rename { new_name: String },
+    /// `/pi|/claude|/codex <prompt>` — dispatch with a specific backend.
+    DispatchWith { backend: Backend, text: String },
+    /// `/backend <name>` — change the default backend.
+    SetBackend { backend: Backend },
+    /// `/model [<model>]` — None shows the current default.
+    Model { model: Option<String> },
+    /// `/import` — open the session importer.
+    Import,
     /// A `/`-prefixed command we don't recognize. The raw text is kept so
     /// the caller can surface "unknown command: /foo".
     Unknown { raw: String },
@@ -54,6 +70,18 @@ pub fn parse(input: &str) -> DispatchCommand {
                 DispatchCommand::Rename { new_name: rest.to_string() }
             }
         }
+        "pi" | "claude" | "codex" if !rest.is_empty() => DispatchCommand::DispatchWith {
+            backend: Backend::parse(cmd).unwrap_or_default(),
+            text: rest.to_string(),
+        },
+        "backend" => match Backend::parse(rest) {
+            Some(backend) => DispatchCommand::SetBackend { backend },
+            None => DispatchCommand::Unknown { raw: trimmed.to_string() },
+        },
+        "model" => DispatchCommand::Model {
+            model: (!rest.is_empty()).then(|| rest.to_string()),
+        },
+        "import" => DispatchCommand::Import,
         _ => DispatchCommand::Unknown { raw: trimmed.to_string() },
     }
 }
@@ -127,10 +155,35 @@ mod tests {
 
     #[test]
     fn unknown_command_keeps_raw() {
-        match parse("/model foo") {
-            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/model foo"),
+        match parse("/frobnicate foo") {
+            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/frobnicate foo"),
             other => panic!("expected Unknown, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn backend_commands() {
+        assert_eq!(
+            parse("/claude fix the bug"),
+            DispatchCommand::DispatchWith { backend: Backend::Claude, text: "fix the bug".into() }
+        );
+        assert_eq!(
+            parse("/codex  review"),
+            DispatchCommand::DispatchWith { backend: Backend::Codex, text: "review".into() }
+        );
+        assert!(matches!(parse("/claude"), DispatchCommand::Unknown { .. }));
+        assert_eq!(parse("/backend cc"), DispatchCommand::SetBackend { backend: Backend::Claude });
+        assert!(matches!(parse("/backend vim"), DispatchCommand::Unknown { .. }));
+    }
+
+    #[test]
+    fn model_and_import() {
+        assert_eq!(parse("/model"), DispatchCommand::Model { model: None });
+        assert_eq!(
+            parse("/model openrouter/qwen/qwen3-coder"),
+            DispatchCommand::Model { model: Some("openrouter/qwen/qwen3-coder".into()) }
+        );
+        assert_eq!(parse("/import"), DispatchCommand::Import);
     }
 
     #[test]

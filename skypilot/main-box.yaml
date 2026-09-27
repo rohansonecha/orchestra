@@ -167,6 +167,9 @@ setup: |
     echo "GIT_NAME=$GIT_NAME"
     echo "GITHUB_TOKEN=$GITHUB_TOKEN"
     echo "LINEAR_TOKEN=$LINEAR_TOKEN"
+    # Repo that sessions get worktrees in when orchestra is started
+    # outside a git repo (e.g. from ~ after sky ssh).
+    echo "ORCHESTRA_WORK_REPO=$HOME/work-repos/prototype"
   } > ~/.orchestra/env
   chmod 600 ~/.orchestra/env
 
