@@ -54,7 +54,7 @@ assert_not_contains() {
 
 cleanup() {
     tui-use kill 2>/dev/null || true
-    pkill -f orchestra-tui 2>/dev/null || true
+    pkill -x orchestra 2>/dev/null || true
     tmux kill-server 2>/dev/null || true
     sleep 1
     rm -rf ~/.orchestra/sessions/* ~/orchestra/worktrees/* 2>/dev/null || true
@@ -66,7 +66,7 @@ cleanup() {
 # can be killed and rebuilt without affecting tmux (data plane).
 do_upgrade() {
     echo "  [upgrade] Killing TUI process..."
-    pkill -f orchestra-tui 2>/dev/null || true
+    pkill -x orchestra 2>/dev/null || true
     pkill -f tui-use 2>/dev/null || true
     sleep 1
 

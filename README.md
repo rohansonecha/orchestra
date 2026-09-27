@@ -5,7 +5,7 @@ with a terminal UI, git worktree isolation, and OpenClaw as the gateway.
 
 ## Current functionality
 
-- **TUI** (`orchestra-tui`) — terminal UI for dispatching and navigating
+- **TUI** (`orchestra`) — terminal UI for dispatching and navigating
   parallel pi coding agent sessions, with automatic git worktree isolation per
   session.
 - **Main box** — long-lived VM running OpenClaw + pi + the TUI, launched via
@@ -17,7 +17,7 @@ with a terminal UI, git worktree isolation, and OpenClaw as the gateway.
 
 ### Dispatch a coding task
 ```
-$ orchestra-tui
+$ orchestra
 ```
 Type a prompt in the dispatch input, press Enter. A new session starts in its
 own git worktree (branched off latest master of your work repo). Pi receives the
@@ -62,7 +62,7 @@ name even though tmux/worktree/etc. are renamed.
 
 ```
 You ──SSH──▶  MAIN BOX (sky launch main-box.yaml)
-                orchestra-tui (ratatui.rs terminal app)
+                orchestra (ratatui.rs terminal app)
                   · dispatch input → new session per prompt
                   · session list with state icons
                   · attach → full-screen pi interactive
@@ -153,7 +153,7 @@ sky launch --infra "$SKY_INFRA" -c main-box skypilot/main-box.yaml
 
 ```bash
 sky ssh main-box
-orchestra-tui
+orchestra
 ```
 
 ## Repository layout

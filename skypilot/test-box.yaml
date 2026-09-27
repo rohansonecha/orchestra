@@ -103,7 +103,7 @@ setup: |
   cd ~/orchestra/tui && cargo build --release || {
     echo "WARNING: TUI build failed; run 'cargo build --release' in ~/orchestra/tui manually"
   }
-  sudo ln -sf ~/orchestra/tui/target/release/orchestra-tui /usr/local/bin/orchestra
+  sudo ln -sf ~/orchestra/tui/target/release/orchestra /usr/local/bin/orchestra
 
   # --- Persist secret env vars for SSH sessions ---
   mkdir -p ~/.orchestra

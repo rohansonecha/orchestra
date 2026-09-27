@@ -1,11 +1,11 @@
 [package]
-name = "orchestra-tui"
+name = "orchestra"
 version = "0.1.0"
 edition = "2021"
 description = "Terminal UI for managing parallel pi coding agent sessions with worktree isolation"
 
 [[bin]]
-name = "orchestra-tui"
+name = "orchestra"
 path = "src/main.rs"
 
 [dependencies]

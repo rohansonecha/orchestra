@@ -58,7 +58,7 @@ assert_not_contains() {
 
 cleanup() {
     tui-use kill 2>/dev/null || true
-    pkill -f orchestra-tui 2>/dev/null || true
+    pkill -x orchestra 2>/dev/null || true
     tmux kill-server 2>/dev/null || true
     sleep 1
     rm -rf ~/.orchestra/sessions/* ~/orchestra/worktrees/* 2>/dev/null || true
