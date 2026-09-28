@@ -933,6 +933,35 @@ fn rename_cli() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `orchestra claude-open <session-id> [claude args...]` — what an
+/// orchestra tmux pane runs to reopen a Claude Code session. `claude
+/// --resume` refuses a session that is running as a Claude Code background
+/// session, so attach to those instead; a session open in another terminal
+/// is reported rather than resumed twice.
+fn claude_open_cli() -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let Some((id, extra)) = args.split_first() else {
+        eprintln!("usage: orchestra claude-open <session-id> [claude args...]");
+        std::process::exit(2);
+    };
+    let err = match session::running_claude(id) {
+        Some(session::RunningClaude::Background { short_id }) => {
+            Command::new("claude").args(["attach", &short_id]).exec()
+        }
+        Some(session::RunningClaude::Interactive { pid }) => {
+            eprintln!(
+                "[orchestra] This Claude Code session is open in another terminal (pid {pid}). \
+                 Exit it there, then start it again here."
+            );
+            std::process::exit(1);
+        }
+        None => Command::new("claude").arg("--resume").arg(id).args(extra).exec(),
+    };
+    // exec only returns on failure.
+    Err(err.into())
+}
+
 fn main() -> anyhow::Result<()> {
     // Subcommands
     if let Some(cmd) = std::env::args().nth(1) {
@@ -943,6 +972,7 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             "rename" => return rename_cli(),
+            "claude-open" => return claude_open_cli(),
             _ => {}
         }
     }

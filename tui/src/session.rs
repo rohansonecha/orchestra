@@ -264,14 +264,15 @@ pub fn launch_commands(sess: &Session, system_prompt: Option<&Path>) -> Launch {
             let sp = system_prompt
                 .map(|p| format!(" --append-system-prompt \"$(cat {})\"", sq(&p.to_string_lossy())))
                 .unwrap_or_default();
+            // Reopening goes through `orchestra claude-open`, which attaches
+            // instead when the session is running as a Claude Code
+            // background session (`claude --resume` refuses those).
+            let open = |id: &str| format!("{} claude-open {}{model}", sq(&orchestra_bin()), sq(id));
             match &sess.external_id {
-                Some(ext) => {
-                    let resume = format!("claude --resume {}{model}", sq(ext));
-                    Launch { first: resume.clone(), restart: resume }
-                }
+                Some(ext) => Launch { first: open(ext), restart: open(ext) },
                 None => Launch {
                     first: format!("claude --session-id {}{model}{sp}{prompt_arg}", sq(&sess.id)),
-                    restart: format!("claude --resume {}{model}", sq(&sess.id)),
+                    restart: open(&sess.id),
                 },
             }
         }
@@ -291,6 +292,47 @@ pub fn launch_commands(sess: &Session, system_prompt: Option<&Path>) -> Launch {
             }
         }
     }
+}
+
+/// This binary's path, for commands tmux runs later (`claude-open`).
+fn orchestra_bin() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "orchestra".to_string())
+}
+
+/// A Claude Code session that is currently running, per
+/// `claude agents --json` (which lists interactive and background ones).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunningClaude {
+    /// A background session; `claude attach <short_id>` opens it.
+    Background { short_id: String },
+    /// Open in a terminal somewhere else (listed with its pid, no short id).
+    Interactive { pid: String },
+}
+
+pub fn running_claude(session_id: &str) -> Option<RunningClaude> {
+    let out = Command::new("claude")
+        .args(["agents", "--json"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    find_running(&String::from_utf8_lossy(&out.stdout), session_id)
+}
+
+fn find_running(json: &str, session_id: &str) -> Option<RunningClaude> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v.as_array()?.iter().find_map(|a| {
+        if a.get("sessionId")?.as_str()? != session_id {
+            return None;
+        }
+        let field = |k: &str| a.get(k).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
+        match a.get("kind").and_then(|k| k.as_str()) {
+            Some("background") => Some(RunningClaude::Background { short_id: field("id")? }),
+            _ => Some(RunningClaude::Interactive { pid: field("pid").unwrap_or_else(|| "?".to_string()) }),
+        }
+    })
 }
 
 /// Spawn the session's agent inside a detached tmux session.
@@ -325,8 +367,20 @@ pub fn spawn(sess: &Session) -> std::io::Result<()> {
             done
             touch {ready_marker}
         ) &
+        started=$(date +%s)
         {first}
-        while true; do sleep 1; {restart}; done",
+        while true; do
+            # An agent that exits right after starting would otherwise be
+            # relaunched every second, flooding the pane with its error.
+            if [ $(( $(date +%s) - started )) -lt 5 ]; then
+                printf '\n[orchestra] The agent exited right after starting. Press Enter to start it again.\n'
+                read -r _
+            else
+                sleep 1
+            fi
+            started=$(date +%s)
+            {restart}
+        done",
         first = launch.first,
         restart = launch.restart,
     );
@@ -522,14 +576,33 @@ mod tests {
             l.first,
             "claude --session-id 'ID' --append-system-prompt \"$(cat '/sp.md')\" 'do x'"
         );
-        assert_eq!(l.restart, "claude --resume 'ID'");
+        assert!(l.restart.ends_with(" claude-open 'ID'"), "{}", l.restart);
 
         let mut r = sess(Backend::Claude, "");
         r.origin = Origin::Resumed;
         r.external_id = Some("abc".into());
+        r.model = Some("opus".into());
         let l = launch_commands(&r, None);
-        assert_eq!(l.first, "claude --resume 'abc'");
+        assert!(l.first.ends_with(" claude-open 'abc' --model 'opus'"), "{}", l.first);
         assert_eq!(l.first, l.restart);
+    }
+
+    #[test]
+    fn finds_running_claude_session() {
+        let json = r#"[
+            {"id":"a4a20d11","sessionId":"a4a20d11-e247","kind":"background","state":"done"},
+            {"pid":"859259","sessionId":"77aa0000-1111","kind":"interactive","status":"busy"}
+        ]"#;
+        assert_eq!(
+            find_running(json, "a4a20d11-e247"),
+            Some(RunningClaude::Background { short_id: "a4a20d11".into() })
+        );
+        assert_eq!(
+            find_running(json, "77aa0000-1111"),
+            Some(RunningClaude::Interactive { pid: "859259".into() })
+        );
+        assert_eq!(find_running(json, "nope"), None);
+        assert_eq!(find_running("not json", "x"), None);
     }
 
     #[test]
