@@ -973,6 +973,13 @@ fn main() -> anyhow::Result<()> {
             }
             "rename" => return rename_cli(),
             "claude-open" => return claude_open_cli(),
+            "tmux-left" => {
+                // Called by the tmux Left binding; exit 0 means detach.
+                let a: Vec<String> = std::env::args().skip(2).collect();
+                let num = |i: usize| a.get(i).and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+                let detach = a.len() == 4 && session::tmux_left_should_detach(&a[0], &a[1], num(2), num(3));
+                std::process::exit(if detach { 0 } else { 1 });
+            }
             _ => {}
         }
     }

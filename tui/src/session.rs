@@ -335,6 +335,42 @@ fn find_running(json: &str, session_id: &str) -> Option<RunningClaude> {
     })
 }
 
+/// Shell command tmux runs on Left (see `orchestra tmux-left`). If the
+/// orchestra binary is gone the command fails and Left goes to the agent.
+fn left_key_check() -> String {
+    format!(
+        "{} tmux-left '#{{session_name}}' '#{{pane_id}}' '#{{cursor_x}}' '#{{cursor_y}}'",
+        sq(&orchestra_bin())
+    )
+}
+
+/// Whether Left should detach: nothing but blanks or a prompt symbol to the
+/// left of the cursor. pi's input starts at column 0; Claude Code's and
+/// Codex's start after a `❯` / `›` prompt, where Left on an empty input
+/// would otherwise go to the agent (Claude Code opens its agents view).
+pub fn at_input_start(line: &str, cursor_x: usize) -> bool {
+    line.chars()
+        .take(cursor_x)
+        .all(|c| c.is_whitespace() || matches!(c, '❯' | '>' | '›' | '│' | '┃' | '|'))
+}
+
+/// `orchestra tmux-left <session> <pane> <x> <y>`: exit status for the Left
+/// binding. Only orchestra's own sessions detach; the binding is global, so
+/// any other tmux session gets its Left key unchanged.
+pub fn tmux_left_should_detach(session: &str, pane: &str, x: usize, y: usize) -> bool {
+    if !paths::sessions_dir().join(session).join("state.json").exists() {
+        return false;
+    }
+    let y = y.to_string();
+    let line = Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", pane, "-S", &y, "-E", &y])
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    at_input_start(&line, x)
+}
+
 /// Spawn the session's agent inside a detached tmux session.
 ///
 /// A background subshell polls the pane until the agent UI has rendered,
@@ -390,18 +426,19 @@ pub fn spawn(sess: &Session) -> std::io::Result<()> {
     // default-terminal are applied before the session's PTY is created.
     // The main-box has TERM=dumb, so without this, tmux defaults to
     // "screen" (8 colors) causing weird highlighting in agent output.
+    let left_check = left_key_check();
     let tmux_conf = paths::home().join(".tmux.conf");
     if !tmux_conf.exists() {
-        std::fs::write(&tmux_conf, "\
+        std::fs::write(&tmux_conf, format!("\
 set -g default-terminal \"screen-256color\"
 set -ga terminal-overrides \",*256col*:Tc\"
 set -g extended-keys on
 set -g remain-on-exit on
-# Left detaches only when cursor is at column 0, otherwise passes through
-# to the agent so the user can move the cursor left within the text input.
-bind-key -n Left if-shell -F '#{==:#{cursor_x},0}' detach-client 'send-keys Left'
+# In orchestra sessions, Left detaches back to orchestra when the cursor is
+# at the start of the agent's input; otherwise it goes to the agent.
+bind-key -n Left if-shell \"{left_check}\" detach-client 'send-keys Left'
 bind-key -n C-c detach-client
-")?;
+"))?;
     }
 
     let status = Command::new("tmux")
@@ -419,7 +456,7 @@ bind-key -n C-c detach-client
     // Set keybindings after session creation as a fallback, in case
     // the tmux server was already running without ~/.tmux.conf.
     Command::new("tmux")
-        .args(["bind-key", "-n", "Left", "if-shell", "-F", "#{==:#{cursor_x},0}", "detach-client", "send-keys", "Left"])
+        .args(["bind-key", "-n", "Left", "if-shell", &left_check, "detach-client", "send-keys Left"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
@@ -438,12 +475,14 @@ pub fn load_sessions() -> Vec<Session> {
             let path = entry.path().join("state.json");
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut sess) = serde_json::from_str::<Session>(&content) {
-                    // Skip sessions whose tmux is dead — their state files
-                    // are stale. Clean up the state dir + .ready marker so
-                    // they don't accumulate. This prevents the TUI from
-                    // showing sessions that can't be attached to.
+                    // Hide sessions with no tmux session, so the list never
+                    // shows one that can't be attached to. Their state is
+                    // kept rather than deleted: "no tmux session" can also
+                    // mean this TUI is talking to a different tmux server
+                    // (e.g. run inside another tmux via -L), and deleting
+                    // would lose the worktree/branch/conversation record of
+                    // a live session.
                     if !tmux_alive(&sess.name) {
-                        remove_session_state(&sess.name);
                         continue;
                     }
                     if sess.id.is_empty() {
@@ -585,6 +624,19 @@ mod tests {
         let l = launch_commands(&r, None);
         assert!(l.first.ends_with(" claude-open 'abc' --model 'opus'"), "{}", l.first);
         assert_eq!(l.first, l.restart);
+    }
+
+    #[test]
+    fn left_detaches_only_at_input_start() {
+        // pi: input at column 0.
+        assert!(at_input_start("hello", 0));
+        // Claude Code empty prompt: cursor after "❯\u{a0}", placeholder after it.
+        assert!(at_input_start("❯\u{a0}Try \"fix typecheck errors\"", 2));
+        assert!(at_input_start("› ", 2));
+        // Text before the cursor: Left moves the cursor instead.
+        assert!(!at_input_start("❯ abc", 5));
+        assert!(!at_input_start("❯ abc", 3));
+        assert!(!at_input_start("hello", 2));
     }
 
     #[test]
