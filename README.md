@@ -98,6 +98,31 @@ show sessions from every directory.
 Deleting an imported session only stops its tmux session. Its directory and
 its Claude Code or Codex transcript are left alone.
 
+### Switch a session to another agent or model
+Select a session in Agent View and type `/switch <target>`. The session keeps
+its name, worktree and conversation; only the agent running it changes.
+
+- `/switch claude` or `/switch codex` moves it to Claude Code or Codex
+  (`/switch claude:opus` picks a model).
+- `/switch pi:<provider>/<model>`, or just a model name such as
+  `/switch GLM-5.3`, moves it to pi on that model. Any model pi knows works,
+  including custom providers in `~/.pi/agent/models.json`.
+- Switching models within the same agent restarts it on its own transcript
+  with the new model, so nothing is converted.
+
+When the agent changes, orchestra rewrites the conversation as the new
+agent's own session file and resumes it there:
+
+- Shell, file read, file write and file edit calls (nearly all tool use) are
+  kept as real tool calls, with names and arguments mapped to the new agent's
+  tools. Other tools, such as MCP tools or Codex's JavaScript cells, are kept
+  as text describing the call. Codex receives everything as text.
+- If the session ran in the new agent before, that agent gets its own
+  original transcript back, with only the turns since then added. So switching
+  Claude Code → pi → Claude Code loses nothing from the Claude Code part.
+- Long tool output is shortened, and a short note tells the model the
+  conversation was moved and that it should re-read files before editing.
+
 ### Resume after disconnect
 Session state is persisted to `~/.orchestra/sessions/<name>/state.json`. On TUI
 restart, previous sessions appear in the list (marked as Idle). Attach to resume
