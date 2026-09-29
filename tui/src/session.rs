@@ -374,7 +374,24 @@ pub fn bind_typing_in_copy_mode() {
     if current.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == VERSION) {
         return;
     }
-    let _ = Command::new("tmux").args(typing_bind_args(VERSION)).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    // tmux 3.6+ rejects very long command lists ("command too long"), so
+    // bind in chunks of commands; the marker (the last command) is only
+    // reached if every chunk succeeded, so a failure is retried next time.
+    let args = typing_bind_args(VERSION);
+    let commands: Vec<&[String]> = args.split(|a| a == ";").collect();
+    for chunk in commands.chunks(24) {
+        let mut call: Vec<&str> = Vec::new();
+        for (i, cmd) in chunk.iter().enumerate() {
+            if i > 0 {
+                call.push(";");
+            }
+            call.extend(cmd.iter().map(String::as_str));
+        }
+        let ok = Command::new("tmux").args(&call).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        if !ok.is_ok_and(|s| s.success()) {
+            return;
+        }
+    }
 }
 
 /// Arguments for one tmux call that binds the typing keys in both copy-mode
