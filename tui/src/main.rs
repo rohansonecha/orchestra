@@ -439,6 +439,14 @@ impl App {
             return;
         }
         self.activity_scanned = Some(Instant::now());
+        // Codex sessions orchestra started: record their thread id once
+        // Codex has picked it, so the list and restarts match by id.
+        for s in self.sessions.iter_mut().filter(|s| s.backend == Backend::Codex && s.external_id.is_none()) {
+            if let Some((id, _)) = switch::discover_codex_thread(&s.worktree_path, s.created_at) {
+                s.external_id = Some(id);
+                session::save_session(s);
+            }
+        }
         let names: Vec<(String, Backend, Option<PathBuf>)> = self
             .sessions
             .iter()
@@ -1063,8 +1071,6 @@ impl App {
             s.segments.iter().any(|seg| seg.path == path)
                 || s.external_id.as_deref() == Some(ext.id.as_str())
                 || (s.backend == ext.backend && s.backend == Backend::Claude && s.id == ext.id)
-                || (s.backend == Backend::Codex && ext.backend == Backend::Codex
-                    && s.external_id.is_none() && s.worktree_path == ext.cwd)
         })
     }
 
@@ -1729,6 +1735,35 @@ fn claude_open_cli() -> anyhow::Result<()> {
     Err(err.into())
 }
 
+/// `orchestra codex-open <session> [codex args...]` — what the pane runs to
+/// reopen a Codex session orchestra started: resume its own thread by id
+/// (recording it the first time), never "the latest in this directory".
+fn codex_open_cli() -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let Some((name, extra)) = args.split_first() else {
+        eprintln!("usage: orchestra codex-open <session> [codex args...]");
+        std::process::exit(2);
+    };
+    let state = paths::sessions_dir().join(name).join("state.json");
+    let mut sess: Option<Session> = std::fs::read_to_string(&state).ok().and_then(|c| serde_json::from_str(&c).ok());
+    let id = sess.as_ref().and_then(|s| s.external_id.clone()).or_else(|| {
+        let s = sess.as_mut()?;
+        let (id, _) = switch::discover_codex_thread(&s.worktree_path, s.created_at)?;
+        s.external_id = Some(id.clone());
+        session::save_session(s);
+        Some(id)
+    });
+    let err = match id {
+        Some(id) => Command::new("codex").arg("resume").arg(&id).args(extra).exec(),
+        None => {
+            eprintln!("[orchestra] Codex has not recorded this session yet; starting it again.");
+            Command::new("codex").args(extra).exec()
+        }
+    };
+    Err(err.into())
+}
+
 fn main() -> anyhow::Result<()> {
     // Subcommands
     if let Some(cmd) = std::env::args().nth(1) {
@@ -1740,6 +1775,7 @@ fn main() -> anyhow::Result<()> {
             }
             "rename" => return rename_cli(),
             "claude-open" => return claude_open_cli(),
+            "codex-open" => return codex_open_cli(),
             // Used by the copy-mode Left binding.
             "is-orchestra" => {
                 let name = std::env::args().nth(2).unwrap_or_default();

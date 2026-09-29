@@ -350,11 +350,11 @@ pub fn launch_commands(sess: &Session, system_prompt: Option<&Path>) -> Launch {
                     let resume = format!("codex resume {}{model}", sq(ext));
                     Launch { first: resume.clone(), restart: resume }
                 }
-                // Codex picks its own session id. The worktree is unique to
-                // this session, so "most recent in this cwd" is ours.
+                // Codex picks its own session id; `orchestra codex-open`
+                // finds and records it, then resumes that thread by id.
                 None => Launch {
                     first: format!("codex{model}{prompt_arg}"),
-                    restart: format!("codex resume --last{model}"),
+                    restart: format!("{} codex-open {}{model}", sq(&orchestra_bin()), sq(&sess.name)),
                 },
             }
         }
@@ -807,7 +807,7 @@ mod tests {
         s.model = Some("gpt-6".into());
         let l = launch_commands(&s, None);
         assert_eq!(l.first, "codex -m 'gpt-6' 'do y'");
-        assert_eq!(l.restart, "codex resume --last -m 'gpt-6'");
+        assert!(l.restart.ends_with(" codex-open 'n' -m 'gpt-6'"), "{}", l.restart);
 
         let mut r = sess(Backend::Codex, "");
         r.origin = Origin::Resumed;

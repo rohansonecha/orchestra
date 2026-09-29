@@ -87,12 +87,7 @@ pub fn native_transcript(sess: &Session) -> Option<PathBuf> {
             codex_rollouts(&paths::codex_dir().join("sessions"), 4, &mut files);
             match &sess.external_id {
                 Some(id) => files.into_iter().find(|p| p.to_string_lossy().contains(id.as_str())),
-                // Dispatched from orchestra: Codex picked the id. The
-                // worktree is unique to the session, so the newest rollout
-                // started in it is ours.
-                None => newest(files.into_iter().filter(|p| {
-                    codex_cwd(p).as_deref() == Some(sess.worktree_path.as_str())
-                })),
+                None => discover_codex_thread(&sess.worktree_path, sess.created_at).map(|(_, p)| p),
             }
         }
     }
@@ -109,12 +104,38 @@ fn codex_rollouts(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn codex_id(p: &Path) -> Option<String> {
-    codex_meta(p, "/payload/id")
+/// The Codex thread a session orchestra started belongs to: Codex picks
+/// its own id, so this is the first top-level thread started in the
+/// session's directory after the session was created. Several sessions can
+/// share a directory (everything started from ~), so "newest in this
+/// directory" would pick the wrong one.
+pub fn discover_codex_thread(cwd: &str, created_at: u64) -> Option<(String, PathBuf)> {
+    let mut files = Vec::new();
+    codex_rollouts(&paths::codex_dir().join("sessions"), 4, &mut files);
+    files
+        .into_iter()
+        .filter_map(|p| {
+            use std::io::BufRead;
+            let line = std::io::BufReader::new(std::fs::File::open(&p).ok()?).lines().next()?.ok()?;
+            let v: serde_json::Value = serde_json::from_str(&line).ok()?;
+            let m = v.get("payload")?;
+            if m.get("cwd")?.as_str()? != cwd
+                || m.get("parent_thread_id").is_some_and(|x| !x.is_null())
+                || m.get("source").is_some_and(|x| x.is_object())
+            {
+                return None;
+            }
+            let ts = chrono::DateTime::parse_from_rfc3339(m.get("timestamp")?.as_str()?).ok()?.timestamp();
+            // A little slack: the session's clock starts just before codex.
+            let id = m.get("id")?.as_str()?.to_string();
+            (ts + 5 >= created_at as i64).then_some((ts, id, p))
+        })
+        .min_by_key(|(ts, _, _)| *ts)
+        .map(|(_, id, p)| (id, p))
 }
 
-fn codex_cwd(p: &Path) -> Option<String> {
-    codex_meta(p, "/payload/cwd")
+fn codex_id(p: &Path) -> Option<String> {
+    codex_meta(p, "/payload/id")
 }
 
 fn codex_meta(p: &Path, ptr: &str) -> Option<String> {
@@ -359,6 +380,30 @@ mod tests {
         );
         assert_eq!(Target::parse("codex: gpt-6 ").unwrap().model.as_deref(), Some("gpt-6"));
         assert_eq!(Target::parse("vim"), None);
+    }
+
+    #[test]
+    fn codex_thread_is_first_after_creation_in_that_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CODEX_HOME", tmp.path());
+        let day = tmp.path().join("sessions/2026/09/29");
+        std::fs::create_dir_all(&day).unwrap();
+        let meta = |id: &str, cwd: &str, ts: &str, sub: bool| {
+            let mut p = serde_json::json!({"id": id, "cwd": cwd, "timestamp": ts, "source": "cli"});
+            if sub {
+                p["parent_thread_id"] = serde_json::json!("x");
+            }
+            std::fs::write(day.join(format!("rollout-{id}.jsonl")), format!("{}\n", serde_json::json!({"type":"session_meta","payload":p}))).unwrap();
+        };
+        let created = chrono::DateTime::parse_from_rfc3339("2026-09-29T17:00:00Z").unwrap().timestamp() as u64;
+        meta("older", "/home/u", "2026-09-29T16:00:00Z", false); // before the session
+        meta("mine", "/home/u", "2026-09-29T17:00:02Z", false);
+        meta("later", "/home/u", "2026-09-29T17:30:00Z", false); // another session in ~
+        meta("sub", "/home/u", "2026-09-29T17:00:01Z", true); // a subagent thread
+        meta("elsewhere", "/r", "2026-09-29T17:00:01Z", false);
+        let found = discover_codex_thread("/home/u", created).map(|(id, _)| id);
+        std::env::remove_var("CODEX_HOME");
+        assert_eq!(found.as_deref(), Some("mine"));
     }
 
     #[test]
