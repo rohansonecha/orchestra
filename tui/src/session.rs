@@ -632,12 +632,26 @@ pub fn apply_tmux_setup(left_check: &str) {
     // scrolled position. No "Copied" message: tmux cannot know whether the
     // terminal accepted it.
     let _ = Command::new("tmux").args(["set-option", "-s", "set-clipboard", "on"]).status();
+    // A "drag" that barely moved (same line, at most one column) is a
+    // click: leave copy mode, back to the prompt. A real drag copies and
+    // keeps the highlight so you can see what was copied; scrolling or
+    // clicking clears it.
+    let tiny = "#{&&:#{==:#{selection_start_y},#{selection_end_y}},#{&&:#{<=:#{e|-|:#{selection_end_x},#{selection_start_x}},1},#{>=:#{e|-|:#{selection_end_x},#{selection_start_x}},-1}}}";
     for table in ["copy-mode", "copy-mode-vi"] {
         let _ = Command::new("tmux")
-            .args(["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe"])
+            .args(["bind-key", "-T", table, "MouseDragEnd1Pane", "if-shell", "-F", tiny,
+                   "send-keys -X cancel", "send-keys -X copy-pipe-no-clear"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        for (key, dir) in [("WheelUpPane", "scroll-up"), ("WheelDownPane", "scroll-down")] {
+            let _ = Command::new("tmux")
+                .args(["bind-key", "-T", table, key, "select-pane", "\\;", "send-keys", "-X", "clear-selection",
+                       "\\;", "send-keys", "-X", "-N", "5", dir])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
     bind_typing_in_copy_mode();
     // Quiet copy mode: tmux draws the selection and its position counter
@@ -719,16 +733,10 @@ pub fn load_sessions() -> Vec<Session> {
             let path = entry.path().join("state.json");
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut sess) = serde_json::from_str::<Session>(&content) {
-                    // Hide sessions with no tmux session, so the list never
-                    // shows one that can't be attached to. Their state is
-                    // kept rather than deleted: "no tmux session" can also
-                    // mean this TUI is talking to a different tmux server
-                    // (e.g. run inside another tmux via -L), and deleting
-                    // would lose the worktree/branch/conversation record of
-                    // a live session.
-                    if !tmux_alive(&sess.name) {
-                        continue;
-                    }
+                    // A session whose tmux session is gone (tmux restarted,
+                    // pod rebooted) is listed as stopped; opening it resumes
+                    // the same conversation (App::resume_session).
+                    sess.state = if tmux_alive(&sess.name) { sess.state } else { SessionState::Completed };
                     if sess.id.is_empty() {
                         sess.id = uuid::Uuid::new_v4().to_string();
                     }
@@ -742,17 +750,11 @@ pub fn load_sessions() -> Vec<Session> {
     sessions
 }
 
-/// On quit: forget sessions this TUI saw end. Live sessions are not
-/// rewritten — every change is saved when it happens, and rewriting here
-/// would let a second orchestra window overwrite newer state (a /switch
-/// made in the other window) with its stale copy.
-pub fn save_sessions(sessions: &[Session]) {
-    for sess in sessions {
-        if (sess.state == SessionState::Completed || sess.state == SessionState::Failed) && !tmux_alive(&sess.name) {
-            remove_session_state(&sess.name);
-        }
-    }
-}
+/// On quit: nothing to write. Every change is saved when it happens, and
+/// stopped sessions are kept so they can be resumed; only deleting a
+/// session removes its state. (Rewriting here would also let a second
+/// orchestra window overwrite newer state with its stale copy.)
+pub fn save_sessions(_sessions: &[Session]) {}
 
 /// Check if a tmux session is alive.
 pub fn tmux_alive(name: &str) -> bool {
@@ -767,12 +769,6 @@ pub fn tmux_alive(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Remove a session's state directory + .ready marker from disk.
-pub fn remove_session_state(name: &str) {
-    let dir = paths::sessions_dir();
-    let _ = std::fs::remove_dir_all(dir.join(name));
-    let _ = std::fs::remove_file(dir.join(format!("{name}.ready")));
-}
 
 /// Save a single session's state to disk. Called immediately after
 /// dispatch so that the session survives TUI crashes/upgrades — the

@@ -211,6 +211,12 @@ pi is set up to look like Claude Code:
 `install.sh` installs all of this. `/theme` switches orchestra and pi
 together; a running pi session picks changes up with `/reload`.
 
+### Stopped sessions
+If a session's tmux session is gone (tmux restarted, the machine rebooted),
+it stays in the list as **Stopped**. Enter resumes it: its agent starts again
+on its own conversation (pi `--continue`, `claude --resume`, `codex resume`)
+in the same directory. Delete it with Ctrl+X twice if you don't need it.
+
 ### Resume after disconnect
 Session state is persisted to `~/.orchestra/sessions/<name>/state.json`. On TUI
 restart, previous sessions appear in the list (marked as Idle). Attach to resume

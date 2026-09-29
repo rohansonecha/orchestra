@@ -893,6 +893,45 @@ impl App {
 
     /// Move session `idx` to `target`, keeping its conversation, and
     /// restart its tmux session on the new agent.
+    /// Bring a stopped session back: start its agent again on its own
+    /// transcript (pi --continue, claude --resume, codex resume), in its
+    /// directory, under the same name.
+    fn resume_session(&mut self, idx: usize) -> String {
+        let sess = &mut self.sessions[idx];
+        if !std::path::Path::new(&sess.worktree_path).is_dir() {
+            return format!("{} can't resume: its directory {} is gone", sess.display_title(), sess.worktree_path);
+        }
+        if sess.remote.is_none() {
+            match (sess.backend, switch::native_transcript(sess)) {
+                (_, None) => {} // nothing recorded yet: start fresh with its prompt
+                (Backend::Pi, Some(_)) => sess.origin = Origin::Resumed,
+                (Backend::Claude, Some(_)) => {
+                    sess.origin = Origin::Resumed;
+                    if sess.external_id.is_none() {
+                        sess.external_id = Some(sess.id.clone());
+                    }
+                }
+                (Backend::Codex, Some(_)) => {
+                    sess.origin = Origin::Resumed;
+                    if sess.external_id.is_none() {
+                        // (codex-open finds it on start if this can't yet)
+                        sess.external_id = switch::discover_codex_thread(&sess.worktree_path, sess.created_at).map(|(id, _)| id);
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_file(paths::sessions_dir().join(format!("{}.ready", sess.name)));
+        sess.state = SessionState::Initializing;
+        match session::spawn(sess) {
+            Ok(()) => {
+                session::save_session(sess);
+                self.activity_scanned = None;
+                format!("Resuming {}", sess.display_title())
+            }
+            Err(e) => format!("Resume failed: {e}"),
+        }
+    }
+
     /// Starts the switch on a worker thread. The session keeps running on
     /// its current agent until the new transcript is fully written; only
     /// then is it restarted (see `finish_switch`). A switch that fails or
@@ -2092,6 +2131,9 @@ fn handle_overlay_key(app: &mut App, key: event::KeyEvent) -> bool {
 
 fn open_selected(app: &mut App) {
     match app.selected_row() {
+        Some(RowRef::Session(idx)) if matches!(app.sessions[idx].state, SessionState::Completed | SessionState::Failed) => {
+            app.status_message = app.resume_session(idx);
+        }
         Some(RowRef::Session(idx)) => {
             if app.sessions[idx].state == SessionState::Initializing {
                 app.status_message = format!("{} is still starting…", app.sessions[idx].name);
@@ -2361,7 +2403,9 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         .map(|s| {
             let act = app.activity.get(&s.name);
             let switching = app.switching.get(&s.name);
-            let status = if switching.is_some() || s.state == SessionState::Initializing {
+            let status = if s.state == SessionState::Completed || s.state == SessionState::Failed {
+                Status::Stopped
+            } else if switching.is_some() || s.state == SessionState::Initializing {
                 Status::Starting
             } else if working(s) {
                 Status::Working
@@ -2375,6 +2419,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
                 label: switching.map(|_| "Switching".to_string()),
                 summary: match switching {
                     Some(t) => format!("switching to {t}…"),
+                    None if status == Status::Stopped => "enter resumes the conversation".to_string(),
                     None => act.and_then(|a| a.summary.clone()).unwrap_or_else(|| s.prompt.clone()),
                 },
                 meta: {

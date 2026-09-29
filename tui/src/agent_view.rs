@@ -45,6 +45,8 @@ pub enum Status {
     Starting,
     /// A Claude Code / Codex session not (yet) in orchestra.
     Elsewhere,
+    /// Its tmux session is gone; opening it resumes the conversation.
+    Stopped,
 }
 
 impl Status {
@@ -54,6 +56,7 @@ impl Status {
             Status::Ready => ("✻", green()),
             Status::Starting => ("◌", accent()),
             Status::Elsewhere => ("∙", dim()),
+            Status::Stopped => ("∙", dim()),
         }
     }
     fn word(self) -> (&'static str, Color) {
@@ -62,6 +65,7 @@ impl Status {
             Status::Ready => ("Ready", green()),
             Status::Starting => ("Starting", accent()),
             Status::Elsewhere => ("", grey()),
+            Status::Stopped => ("Stopped", grey()),
         }
     }
 }
