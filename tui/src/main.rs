@@ -63,12 +63,13 @@ use ratatui::Terminal;
 
 mod command;
 mod config;
-mod convert;
+mod history;
 mod import;
 mod paths;
 mod rename;
 mod repo;
 mod session;
+mod switch;
 mod tree_layout;
 mod tree_store;
 mod tree_view;
@@ -262,10 +263,55 @@ impl App {
                 self.clear_input();
                 self.open_import();
             }
+            command::DispatchCommand::Switch { target } => {
+                self.clear_input();
+                self.status_message = match self.selected() {
+                    Some(idx) => match self.resolve_target(&target) {
+                        Ok(t) => self.switch_session(idx, &t),
+                        Err(e) => e,
+                    },
+                    None => "Select a session to switch first".to_string(),
+                };
+            }
             command::DispatchCommand::PlainPrompt { text } => {
                 self.dispatch_session(&text, self.config.default_backend);
             }
         }
+    }
+
+    /// `/switch` argument → target. `claude`, `codex:gpt-6` and
+    /// `pi:provider/id` are explicit; anything else is looked up as a pi
+    /// model (fuzzy, like /model).
+    fn resolve_target(&self, spec: &str) -> Result<switch::Target, String> {
+        if let Some(mut t) = switch::Target::parse(spec) {
+            if t.backend == Backend::Pi {
+                if let Some(m) = &t.model {
+                    t.model = Some(resolve_pi_model(m)?);
+                }
+            }
+            return Ok(t);
+        }
+        Ok(switch::Target { backend: Backend::Pi, model: Some(resolve_pi_model(spec)?) })
+    }
+
+    /// Move session `idx` to `target`, keeping its conversation, and
+    /// restart its tmux session on the new agent.
+    fn switch_session(&mut self, idx: usize, target: &switch::Target) -> String {
+        let sess = &mut self.sessions[idx];
+        let summary = match switch::switch(sess, target) {
+            Ok(s) => s,
+            Err(e) => return format!("Switch failed: {e}"),
+        };
+        let name = sess.name.clone();
+        let _ = Command::new("tmux").args(["kill-session", "-t", &name]).status();
+        let _ = std::fs::remove_file(paths::sessions_dir().join(format!("{name}.ready")));
+        sess.state = SessionState::Initializing;
+        if let Err(e) = session::spawn(sess) {
+            return format!("{summary} — but restarting failed: {e}");
+        }
+        session::save_session(sess);
+        self.reload_tree();
+        summary
     }
 
     fn clear_input(&mut self) {
@@ -438,9 +484,17 @@ impl App {
             return;
         };
         let name = format!("pi-{}", Self::imported_name(&ext));
-        let mut sess = Session::new(name.clone(), ext.title.clone(), String::new(), Backend::Pi);
-        sess.origin = Origin::Forked { from: format!("{}:{}", ext.backend.as_str(), ext.id) };
-        sess.model = self.config.model_for(Backend::Pi);
+        // Adopt it as it is, then switch the copy to pi: the same path as
+        // switching a running session (switch.rs), so tool calls carry over.
+        let mut sess = Session::new(name.clone(), ext.title.clone(), String::new(), ext.backend);
+        sess.origin = Origin::Resumed;
+        sess.external_id = Some(ext.id.clone());
+        sess.segments.push(session::Segment {
+            backend: ext.backend,
+            model: None,
+            path: ext.path.to_string_lossy().to_string(),
+            seed: 0,
+        });
         // Fork into a worktree of the repo the session belonged to, so the
         // pi copy can't step on the original's files. Sessions from outside
         // any repo run in their original directory.
@@ -466,13 +520,14 @@ impl App {
             },
             None => sess.worktree_path = ext.cwd.clone(),
         }
-        match convert::fork_into_pi(ext.backend, &ext.path, &sess.pi_session_dir(), &sess.worktree_path, sess.model.as_deref()) {
-            Ok((_, n)) => {
+        let target = switch::Target { backend: Backend::Pi, model: self.config.model_for(Backend::Pi) };
+        match switch::switch(&mut sess, &target) {
+            Ok(summary) => {
                 let from = match (&ext.git_branch, &src_head) {
-                    (Some(b), Some(_)) if sess.branch.is_some() => format!(", from {b} HEAD"),
+                    (Some(b), Some(_)) if sess.branch.is_some() => format!(", worktree from {b} HEAD"),
                     _ => String::new(),
                 };
-                self.start_session(sess, format!("Forked into pi as {name}: {n} messages{from}"), warnings);
+                self.start_session(sess, format!("Forked as {name}: {summary}{from}"), warnings);
                 self.mode = ViewMode::Agent;
             }
             Err(e) => {
@@ -907,6 +962,17 @@ fn synthesize_tree_from_sessions(sessions: &[Session]) -> Tree {
         root_id: Some(root_id),
         nodes,
         updated_at: now,
+    }
+}
+
+/// A pi model pattern → its exact `provider/id` (must match one model).
+fn resolve_pi_model(pattern: &str) -> Result<String, String> {
+    match config::pi_models_matching(pattern) {
+        Ok(found) if found.len() == 1 => Ok(found[0].clone()),
+        Ok(found) if found.iter().any(|f| f == pattern) => Ok(pattern.to_string()),
+        Ok(found) if found.is_empty() => Err(format!("pi knows no model matching '{pattern}' (see pi --list-models)")),
+        Ok(found) => Err(format!("'{pattern}' matches {} pi models: {}", found.len(), found.join(", "))),
+        Err(e) => Err(e),
     }
 }
 

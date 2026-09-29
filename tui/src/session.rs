@@ -95,6 +95,24 @@ pub struct Session {
     /// Claude Code / Codex session id for resumed sessions.
     #[serde(default)]
     pub external_id: Option<String>,
+    /// Each agent this conversation has run in, oldest first (filled in on
+    /// the first switch). See switch.rs.
+    #[serde(default)]
+    pub segments: Vec<Segment>,
+}
+
+/// One stretch of a conversation in one agent's own transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Segment {
+    pub backend: Backend,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The agent's transcript file.
+    pub path: String,
+    /// Where this segment's own turns start in that file: the history
+    /// copied in from earlier segments comes first. Lines for Claude Code
+    /// and Codex, messages on the active branch for pi.
+    pub seed: usize,
 }
 
 impl Session {
@@ -115,6 +133,7 @@ impl Session {
             base_ref: None,
             branch: None,
             external_id: None,
+            segments: Vec::new(),
         }
     }
 
@@ -452,6 +471,15 @@ bind-key -n C-c detach-client
     if !status.success() {
         return Err(std::io::Error::other("tmux new-session failed"));
     }
+
+    // No tmux status bar: an attached session should look like the agent
+    // alone, as it does in Claude Code's own agents view. Scoped to this
+    // session so other tmux use keeps its status bar.
+    Command::new("tmux")
+        .args(["set-option", "-t", name, "status", "off"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
 
     // Set keybindings after session creation as a fallback, in case
     // the tmux server was already running without ~/.tmux.conf.

@@ -8,6 +8,8 @@
 //   /model [<model>]              set (or show) the default model for the
 //                                 default backend; `/model -` clears it
 //   /import                       browse Claude Code / Codex sessions
+//   /switch <target>              move the selected session to another
+//                                 agent/model, keeping the conversation
 //   /agent <name>, /rename <name>
 //
 // Parsing is intentionally strict: a `/agent` command must have a name,
@@ -33,6 +35,10 @@ pub enum DispatchCommand {
     Model { model: Option<String> },
     /// `/import` — open the session importer.
     Import,
+    /// `/switch <target>` — move the selected session to another agent or
+    /// model, keeping its conversation (`claude`, `codex:gpt-6`,
+    /// `pi:provider/model`, or a bare pi model name).
+    Switch { target: String },
     /// A `/`-prefixed command we don't recognize. The raw text is kept so
     /// the caller can surface "unknown command: /foo".
     Unknown { raw: String },
@@ -82,6 +88,7 @@ pub fn parse(input: &str) -> DispatchCommand {
             model: (!rest.is_empty()).then(|| rest.to_string()),
         },
         "import" => DispatchCommand::Import,
+        "switch" if !rest.is_empty() => DispatchCommand::Switch { target: rest.to_string() },
         _ => DispatchCommand::Unknown { raw: trimmed.to_string() },
     }
 }
@@ -184,6 +191,8 @@ mod tests {
             DispatchCommand::Model { model: Some("openrouter/qwen/qwen3-coder".into()) }
         );
         assert_eq!(parse("/import"), DispatchCommand::Import);
+        assert_eq!(parse("/switch claude:opus"), DispatchCommand::Switch { target: "claude:opus".into() });
+        assert!(matches!(parse("/switch"), DispatchCommand::Unknown { .. }));
     }
 
     #[test]
