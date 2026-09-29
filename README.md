@@ -66,7 +66,9 @@ Letters always go into the prompt; shortcuts use Ctrl, as in Claude Code's
 agents view. The prompt has the usual editing keys: Option+Delete, Ctrl+W or
 Ctrl+Backspace delete a word, Cmd+Delete or Ctrl+U delete to the start of the
 line, Ctrl+K to the end, Ctrl+A / Ctrl+E or Home / End jump, and Option or
-Ctrl with ← / → move by word.
+Ctrl with ← / → move by word. Pasting multi-line text puts a
+`[Pasted text #1 +12 lines]` token in the prompt, as in Claude Code; the full
+text is sent on Enter, and Backspace after a token removes it.
 
 ### Work in parallel
 Worktrees follow the same layout Claude Code uses for `.claude/worktrees/`:

@@ -239,6 +239,8 @@ struct App {
     pi_models: Option<Vec<(String, String, String)>>,
     pi_models_rx: Option<std::sync::mpsc::Receiver<Vec<(String, String, String)>>>,
     side_rx: Option<std::sync::mpsc::Receiver<SideAnswer>>,
+    /// Text behind the `[Pasted text #n ...]` tokens in the prompt.
+    pastes: Vec<String>,
     switch_tx: std::sync::mpsc::Sender<SwitchDone>,
     switch_rx: std::sync::mpsc::Receiver<SwitchDone>,
     /// Sessions being switched → what they are switching to.
@@ -286,6 +288,7 @@ impl App {
                 Some(rx)
             },
             side_rx: None,
+            pastes: Vec::new(),
             switch_tx,
             switch_rx,
             switching: HashMap::new(),
@@ -475,7 +478,7 @@ impl App {
     }
 
     fn dispatch_new(&mut self) {
-        let prompt = self.input.trim().to_string();
+        let prompt = self.expanded_input().trim().to_string();
         if prompt.is_empty() {
             return;
         }
@@ -948,6 +951,41 @@ impl App {
     fn clear_input(&mut self) {
         self.input.clear();
         self.cursor_pos = 0;
+        self.pastes.clear();
+    }
+
+    /// A paste. Multi-line or long text becomes a `[Pasted text #1 +12
+    /// lines]` token in the prompt (as in Claude Code), expanded to the full
+    /// text on Enter; short single-line text is inserted as typed. The
+    /// rename box takes everything inline, newlines as spaces.
+    fn paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let insert = |app: &mut App, t: &str| {
+            let at = app.input.char_indices().nth(app.cursor_pos).map(|(i, _)| i).unwrap_or(app.input.len());
+            app.input.insert_str(at, t);
+            app.cursor_pos += t.chars().count();
+        };
+        if self.input_mode == InputMode::Rename || self.mode != ViewMode::Agent {
+            let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            insert(self, &flat);
+            return;
+        }
+        let lines = text.trim_end_matches('\n').lines().count();
+        if text == "\n" {
+            // Fallback newline from a paste without bracketed paste.
+            insert(self, "\n");
+        } else if lines > 1 || text.chars().count() > 800 {
+            self.pastes.push(text.trim_end_matches('\n').to_string());
+            let token = paste_token(self.pastes.len(), &self.pastes[self.pastes.len() - 1]);
+            insert(self, &token);
+        } else {
+            insert(self, text.trim_end_matches('\n'));
+        }
+    }
+
+    /// The prompt with paste tokens replaced by what was pasted.
+    fn expanded_input(&self) -> String {
+        expand_pastes(&self.input, &self.pastes)
     }
 
     /// `pi (openrouter/qwen3)` style label for status lines.
@@ -1612,6 +1650,25 @@ fn synthesize_tree_from_sessions(sessions: &[Session]) -> Tree {
     }
 }
 
+/// Replace paste tokens with the text they stand for.
+fn expand_pastes(input: &str, pastes: &[String]) -> String {
+    let mut out = input.to_string();
+    for (i, text) in pastes.iter().enumerate() {
+        out = out.replace(&paste_token(i + 1, text), text);
+    }
+    out
+}
+
+/// How a paste shows in the prompt, e.g. `[Pasted text #1 +12 lines]`.
+fn paste_token(n: usize, text: &str) -> String {
+    let lines = text.lines().count();
+    if lines > 1 {
+        format!("[Pasted text #{n} +{lines} lines]")
+    } else {
+        format!("[Pasted text #{n}, {} chars]", text.chars().count())
+    }
+}
+
 /// Whether the agent in a tmux session is mid-turn: every agent shows an
 /// interrupt hint while working ("esc to interrupt", pi's "Working...").
 fn pane_working(name: &str) -> bool {
@@ -1835,7 +1892,9 @@ fn main() -> anyhow::Result<()> {
     }));
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Bracketed paste: a paste arrives as one event instead of keystrokes,
+    // so its newlines don't each submit the prompt.
+    execute!(stdout, EnterAlternateScreen, event::EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -1865,8 +1924,23 @@ fn main() -> anyhow::Result<()> {
         // next redraw, so fast typing and pastes land at once.
         if event::poll(std::time::Duration::from_millis(250))? {
             loop {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind != event::KeyEventKind::Release && handle_key(&mut app, key) {
+                let ev = event::read()?;
+                if let Event::Paste(text) = &ev {
+                    app.paste(text);
+                }
+                if let Event::Key(key) = ev {
+                    // Without bracketed paste, a pasted newline arrives as
+                    // Enter in the same burst as more text: keep it as a
+                    // newline instead of submitting each line.
+                    let more = key.code == KeyCode::Enter
+                        && key.modifiers.is_empty()
+                        && app.mode == ViewMode::Agent
+                        && app.input_mode == InputMode::Dispatch
+                        && !app.input.is_empty()
+                        && event::poll(std::time::Duration::ZERO)?;
+                    if more {
+                        app.paste("\n");
+                    } else if key.kind != event::KeyEventKind::Release && handle_key(&mut app, key) {
                         break 'main;
                     }
                     if app.needs_clear {
@@ -2110,6 +2184,24 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
     if ctrl && key.code == KeyCode::Char('c') {
         return true;
     }
+    // Backspace right after a paste token removes the whole token.
+    if key.code == KeyCode::Backspace && key.modifiers.is_empty() {
+        let before: String = app.input.chars().take(app.cursor_pos).collect();
+        if before.ends_with(']') {
+            if let Some(start) = before.rfind("[Pasted text #") {
+                let token = &before[start..];
+                if app.pastes.iter().enumerate().any(|(i, t)| paste_token(i + 1, t) == token) {
+                    let n = token.chars().count();
+                    let from = app.cursor_pos - n;
+                    let a = app.input.char_indices().nth(from).map(|(i, _)| i).unwrap_or(app.input.len());
+                    let b = app.input.char_indices().nth(app.cursor_pos).map(|(i, _)| i).unwrap_or(app.input.len());
+                    app.input.replace_range(a..b, "");
+                    app.cursor_pos = from;
+                    return false;
+                }
+            }
+        }
+    }
     // Typing and line editing (Ctrl+W, Option+Delete, Ctrl+U, Ctrl+A/E, ...).
     if line_edit::apply(&mut app.input, &mut app.cursor_pos, key) != line_edit::Edit::NotHandled {
         return false;
@@ -2174,7 +2266,7 @@ fn attach_to_session(name: &str, status_message: &mut String) {
     // tmux's detach left the alternate screen. Without re-entering it,
     // orchestra would keep drawing on the shell's normal screen and leave
     // its last frame there on quit.
-    execute!(io::stdout(), EnterAlternateScreen, Clear(ClearType::All)).ok();
+    execute!(io::stdout(), EnterAlternateScreen, event::EnableBracketedPaste, Clear(ClearType::All)).ok();
 
     match status {
         Ok(s) if !s.success() => {
@@ -2191,7 +2283,7 @@ fn attach_to_session(name: &str, status_message: &mut String) {
 /// the shell is exactly as it was before orchestra started.
 fn restore_terminal() {
     disable_raw_mode().ok();
-    execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show).ok();
+    execute!(io::stdout(), event::DisableBracketedPaste, LeaveAlternateScreen, crossterm::cursor::Show).ok();
 }
 
 /// Pull latest code and rebuild the TUI binary. tmux sessions are
@@ -2459,7 +2551,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         hint: "enter opens · ← inside a session comes back here · ctrl+s switches agent/model · ? for shortcuts".into(),
         groups,
         selected: Some(app.sel.min(app.rows().len().saturating_sub(1))).filter(|_| !app.rows().is_empty()),
-        input: app.input.clone(),
+        input: app.input.replace('\n', "↵"),
         cursor: app.cursor_pos,
         placeholder: if renaming { "new name".into() } else { "describe a task for a new session".into() },
         footer,
@@ -2641,6 +2733,17 @@ mod tests {
         s.last_activity = 1000;
         s.state = state;
         s
+    }
+
+    #[test]
+    fn paste_tokens_expand_to_the_pasted_text() {
+        let pastes = vec!["line one\nline two\nline three".to_string(), "x".repeat(900)];
+        let t1 = paste_token(1, &pastes[0]);
+        let t2 = paste_token(2, &pastes[1]);
+        assert_eq!(t1, "[Pasted text #1 +3 lines]");
+        assert_eq!(t2, "[Pasted text #2, 900 chars]");
+        let input = format!("review this {t1} and {t2}");
+        assert_eq!(expand_pastes(&input, &pastes), format!("review this {} and {}", pastes[0], pastes[1]));
     }
 
     #[test]
