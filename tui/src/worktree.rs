@@ -155,6 +155,47 @@ fn copy_worktree_includes(root: &Path, worktree: &Path) -> Vec<String> {
     warnings
 }
 
+/// Copy `src`'s uncommitted work (staged, unstaged and untracked files)
+/// into `dst`, a worktree created at `src`'s HEAD. Used by /branch.
+pub fn carry_changes(src: &Path, dst: &Path) -> Result<usize, String> {
+    let diff = Command::new("git")
+        .args(["diff", "HEAD", "--binary"])
+        .current_dir(src)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let mut n = 0;
+    if !diff.stdout.is_empty() {
+        use std::io::Write;
+        let mut apply = Command::new("git")
+            .args(["apply", "--whitespace=nowarn", "-"])
+            .current_dir(dst)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        apply.stdin.take().ok_or("no stdin")?.write_all(&diff.stdout).map_err(|e| e.to_string())?;
+        let out = apply.wait_with_output().map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(format!("git apply: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        n += 1;
+    }
+    let untracked = run(src, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    for rel in untracked.split('\0').filter(|s| !s.is_empty()) {
+        let from = src.join(rel);
+        if from.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(true) {
+            continue;
+        }
+        let to = dst.join(rel);
+        if let Some(p) = to.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        std::fs::copy(&from, &to).map_err(|e| format!("copy {rel}: {e}"))?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// Uncommitted changes, or commits not on `base_ref`. Used to warn before
 /// deleting a session. Returns a short description, or None when clean.
 pub fn pending_changes(worktree: &Path, base_ref: &str) -> Option<String> {
@@ -254,6 +295,21 @@ mod tests {
         let repo = detect(&clone).unwrap();
         let err = create_worktree(&repo, "x").err().unwrap();
         assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn carries_uncommitted_and_untracked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let clone = clone_fixture(tmp.path());
+        let repo = detect(&clone).unwrap();
+        let a = create_worktree(&repo, "a").unwrap();
+        std::fs::write(a.path.join("README"), "changed").unwrap();
+        std::fs::write(a.path.join("new.txt"), "new").unwrap();
+        let head = git(&a.path, &["rev-parse", "HEAD"]).unwrap();
+        let b = create_worktree_from(&repo, "b", Some(&head)).unwrap();
+        carry_changes(&a.path, &b.path).unwrap();
+        assert_eq!(std::fs::read_to_string(b.path.join("README")).unwrap(), "changed");
+        assert_eq!(std::fs::read_to_string(b.path.join("new.txt")).unwrap(), "new");
     }
 
     #[test]

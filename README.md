@@ -129,6 +129,30 @@ agent's own session file and resumes it there:
 - Long tool output is shortened, and a short note tells the model the
   conversation was moved and that it should re-read files before editing.
 
+### Session commands
+These work on the selected session, whatever agent it runs on:
+
+| Command | What it does |
+|---|---|
+| `/code-review [target]` | Starts a separate, read-only reviewer on the session's worktree, on your default agent/model, so work can be reviewed by a different model |
+| `/simplify` | Asks the session to clean up its own changes and apply the fixes |
+| `/autofix-pr [pr]` | Asks the session to fix its PR's failing checks and review comments, then push |
+| `/loop [5m] <prompt>` | Resends a prompt on an interval, only while the session is idle (`↻` in the list); `/loop stop` ends it |
+| `/branch [name]` | Forks the session: a copy of its conversation and a new worktree with its uncommitted work |
+| `/btw <question>` | Answers a side question about the session without touching its conversation (a pi model reads a copy with read-only tools) |
+| `/recap` | A one-line recap of the session |
+| `/background <prompt>` | Starts a session without opening it |
+| `/bug <what went wrong>` | Drafts a GitHub issue for orchestra; Enter files it (public), Esc cancels |
+| `/theme light\|dark` | Colors for orchestra and new pi sessions |
+
+### Look and feel
+Attached sessions look like the agent alone: no tmux status bar, and the
+mouse wheel scrolls the conversation (Left, or scrolling back down, returns).
+pi uses Claude Code's palettes: `orchestra-light` and `orchestra-dark` themes
+(`skypilot/pi-theme-light.json`, `skypilot/pi-theme.json`), with no colored
+boxes behind tool output. `/theme` switches orchestra and pi together; a
+running pi session picks the change up with `/reload`.
+
 ### Resume after disconnect
 Session state is persisted to `~/.orchestra/sessions/<name>/state.json`. On TUI
 restart, previous sessions appear in the list (marked as Idle). Attach to resume

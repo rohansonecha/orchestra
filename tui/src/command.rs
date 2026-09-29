@@ -39,6 +39,11 @@ pub enum DispatchCommand {
     /// model, keeping its conversation (`claude`, `codex:gpt-6`,
     /// `pi:provider/model`, or a bare pi model name).
     Switch { target: String },
+    /// `/theme light|dark`.
+    Theme { theme: String },
+    /// A session command (/code-review, /simplify, /loop, /btw, ...): see
+    /// commands.rs. `args` is everything after the command word.
+    Session { name: String, args: String },
     /// A `/`-prefixed command we don't recognize. The raw text is kept so
     /// the caller can surface "unknown command: /foo".
     Unknown { raw: String },
@@ -88,6 +93,12 @@ pub fn parse(input: &str) -> DispatchCommand {
             model: (!rest.is_empty()).then(|| rest.to_string()),
         },
         "import" => DispatchCommand::Import,
+        "theme" => match rest {
+            "light" | "dark" => DispatchCommand::Theme { theme: rest.to_string() },
+            _ => DispatchCommand::Unknown { raw: trimmed.to_string() },
+        },
+        "code-review" | "simplify" | "autofix-pr" | "loop" | "background" | "branch" | "btw" | "recap" | "bug"
+        | "teleport" => DispatchCommand::Session { name: cmd.to_string(), args: rest.to_string() },
         // No target: open the picker.
         "switch" => DispatchCommand::Switch { target: rest.to_string() },
         _ => DispatchCommand::Unknown { raw: trimmed.to_string() },
@@ -194,6 +205,11 @@ mod tests {
         assert_eq!(parse("/import"), DispatchCommand::Import);
         assert_eq!(parse("/switch claude:opus"), DispatchCommand::Switch { target: "claude:opus".into() });
         assert_eq!(parse("/switch"), DispatchCommand::Switch { target: String::new() });
+        assert_eq!(
+            parse("/loop 5m check CI"),
+            DispatchCommand::Session { name: "loop".into(), args: "5m check CI".into() }
+        );
+        assert_eq!(parse("/recap"), DispatchCommand::Session { name: "recap".into(), args: String::new() });
     }
 
     #[test]

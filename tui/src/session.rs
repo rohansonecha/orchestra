@@ -137,6 +137,11 @@ impl Session {
         }
     }
 
+    /// A copy for read-only work on another thread (/btw, /branch).
+    pub fn clone_for_read(&self) -> Session {
+        serde_json::from_value(serde_json::to_value(self).expect("session serializes")).expect("session deserializes")
+    }
+
     /// Short tag for the session list.
     pub fn tag(&self) -> String {
         let b = match self.backend {
@@ -313,11 +318,31 @@ pub fn launch_commands(sess: &Session, system_prompt: Option<&Path>) -> Launch {
     }
 }
 
-/// This binary's path, for commands tmux runs later (`claude-open`).
-fn orchestra_bin() -> String {
-    std::env::current_exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "orchestra".to_string())
+/// A stable copy of this binary for commands tmux runs later (the Left
+/// key, `claude-open`, /loop): ~/.orchestra/bin/orchestra, replaced by an
+/// atomic rename, so rebuilding or upgrading orchestra never leaves tmux
+/// pointing at a missing or half-written file.
+pub fn orchestra_bin() -> String {
+    let exe = std::env::current_exe().ok();
+    let dst = paths::state_dir().join("bin").join("orchestra");
+    if let Some(exe) = &exe {
+        let same = std::fs::metadata(exe)
+            .ok()
+            .zip(std::fs::metadata(&dst).ok())
+            .is_some_and(|(a, b)| a.len() == b.len() && a.modified().ok() <= b.modified().ok());
+        if !same {
+            let tmp = dst.with_extension(format!("tmp{}", std::process::id()));
+            let ok = std::fs::create_dir_all(dst.parent().unwrap_or(&dst))
+                .and_then(|_| std::fs::copy(exe, &tmp))
+                .and_then(|_| std::fs::rename(&tmp, &dst));
+            if ok.is_err() {
+                let _ = std::fs::remove_file(&tmp);
+                return exe.to_string_lossy().to_string();
+            }
+        }
+        return dst.to_string_lossy().to_string();
+    }
+    "orchestra".to_string()
 }
 
 /// A Claude Code session that is currently running, per
@@ -415,6 +440,7 @@ pub fn spawn(sess: &Session) -> std::io::Result<()> {
     };
     let cmd_str = format!(
         "[ -f {env_file} ] && {{ set -a; . {env_file}; set +a; }}
+        export COLORTERM=truecolor
         (
             for i in $(seq 1 30); do
                 if {ready_check}; then break; fi
@@ -460,6 +486,13 @@ bind-key -n C-c detach-client
 "))?;
     }
 
+    // Long scrollback, so the whole conversation stays scrollable. It
+    // applies to panes created after it is set, hence before new-session.
+    let _ = Command::new("tmux")
+        .args(["set-option", "-g", "history-limit", "50000"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     let status = Command::new("tmux")
         .args(["new-session", "-d", "-s", name, "-c", &sess.worktree_path])
         .arg("bash")
@@ -480,6 +513,14 @@ bind-key -n C-c detach-client
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
+    // Mouse wheel scrolls the conversation. Without this, tmux turns the
+    // wheel into Up/Down keys, which agents read as prompt-history
+    // navigation in their input box.
+    Command::new("tmux")
+        .args(["set-option", "-t", name, "mouse", "on"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
 
     // Set keybindings after session creation as a fallback, in case
     // the tmux server was already running without ~/.tmux.conf.
@@ -493,6 +534,17 @@ bind-key -n C-c detach-client
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
+    // After scrolling (tmux copy mode), Left should still mean "back to
+    // orchestra", not "move the copy-mode cursor".
+    let is_orch = format!("{} is-orchestra '#{{session_name}}'", sq(&orchestra_bin()));
+    for table in ["copy-mode", "copy-mode-vi"] {
+        let _ = Command::new("tmux")
+            .args(["bind-key", "-T", table, "Left", "if-shell", &is_orch,
+                   "send-keys -X cancel ; detach-client", "send-keys -X cursor-left"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     Ok(())
 }
 

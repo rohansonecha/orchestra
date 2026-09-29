@@ -32,7 +32,8 @@ resources:
 file_mounts:
   ~/.pi/agent/models.json: private/models.json
   ~/.pi/agent/agents/work.md: private/agents/work.md
-  ~/.pi/agent/themes/orchestra.json: skypilot/pi-theme.json
+  ~/.pi/agent/themes/orchestra-dark.json: skypilot/pi-theme.json
+  ~/.pi/agent/themes/orchestra-light.json: skypilot/pi-theme-light.json
   ~/.openclaw/openclaw.json: private/openclaw/openclaw.json
   ~/.openclaw/workspace/AGENTS.md: private/openclaw/workspace/AGENTS.md
   ~/.openclaw/workspace/BOOTSTRAP.md: private/openclaw/workspace/BOOTSTRAP.md
@@ -90,7 +91,7 @@ setup: |
   # The orchestra theme brightens thinking text, tool output, and muted text
   # from the default dark theme's #808080 (index 244, hard to read) to
   # #BCBCBC (index 250, readable). The theme file is mounted via file_mounts.
-  echo '{"theme":"orchestra"}' > ~/.pi/agent/settings.json
+  echo '{"theme":"orchestra-light"}' > ~/.pi/agent/settings.json
 
   # --- Install sky CLI into the existing miniconda3 Python ---
   pip3 install --upgrade pip

@@ -13,16 +13,30 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-pub const GREY: Color = Color::Indexed(246);
-pub const DIM: Color = Color::Indexed(240);
-pub const TEXT: Color = Color::Indexed(252);
-pub const BRIGHT: Color = Color::Indexed(255);
-pub const ACCENT: Color = Color::Indexed(110);
-pub const GREEN: Color = Color::Indexed(114);
-pub const YELLOW: Color = Color::Indexed(220);
-/// Dialog titles (Claude Code's pickers use the same light blue).
-pub const TITLE: Color = Color::Indexed(153);
-const SELECTED_BG: Color = Color::Indexed(236);
+/// Light or dark palette, set from config at startup and by /theme.
+static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_light(light: bool) {
+    LIGHT.store(light, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn pick(dark: Color, light: Color) -> Color {
+    if LIGHT.load(std::sync::atomic::Ordering::Relaxed) { light } else { dark }
+}
+
+// Claude Code's palettes: muted text, color only for status. Primary text
+// is the terminal's own foreground so it reads on any background.
+fn grey() -> Color { pick(Color::Indexed(246), Color::Rgb(102, 102, 102)) }
+fn dim() -> Color { pick(Color::Indexed(240), Color::Rgb(153, 153, 153)) }
+fn text() -> Color { Color::Reset }
+fn bright() -> Color { Color::Reset }
+fn accent() -> Color { pick(Color::Indexed(110), Color::Rgb(215, 119, 87)) }
+fn green() -> Color { pick(Color::Indexed(114), Color::Rgb(44, 122, 57)) }
+fn yellow() -> Color { pick(Color::Indexed(220), Color::Rgb(150, 108, 30)) }
+/// Dialog titles (Claude Code's pickers use light blue on dark, its
+/// permission blue on light).
+fn title_color() -> Color { pick(Color::Indexed(153), Color::Rgb(87, 105, 247)) }
+fn selected_bg() -> Color { pick(Color::Indexed(236), Color::Rgb(240, 240, 240)) }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -36,18 +50,18 @@ pub enum Status {
 impl Status {
     fn glyph(self) -> (&'static str, Color) {
         match self {
-            Status::Working => ("●", YELLOW),
-            Status::Ready => ("✻", GREEN),
-            Status::Starting => ("◌", ACCENT),
-            Status::Elsewhere => ("∙", DIM),
+            Status::Working => ("●", yellow()),
+            Status::Ready => ("✻", green()),
+            Status::Starting => ("◌", accent()),
+            Status::Elsewhere => ("∙", dim()),
         }
     }
     fn word(self) -> (&'static str, Color) {
         match self {
-            Status::Working => ("Working", YELLOW),
-            Status::Ready => ("Ready", GREEN),
-            Status::Starting => ("Starting", ACCENT),
-            Status::Elsewhere => ("", GREY),
+            Status::Working => ("Working", yellow()),
+            Status::Ready => ("Ready", green()),
+            Status::Starting => ("Starting", accent()),
+            Status::Elsewhere => ("", grey()),
         }
     }
 }
@@ -74,6 +88,8 @@ pub struct Group {
 pub enum Overlay {
     /// Two-column shortcut list.
     Help(Vec<(String, String)>),
+    /// A titled block of text (a /btw answer, a /bug draft).
+    Text { title: String, subtitle: String, body: String },
     /// Pick one option (name, description); `current` gets a ✔.
     Picker {
         title: String,
@@ -139,7 +155,7 @@ pub fn row_line(r: &Row, w: usize, selected: bool) -> Line<'static> {
 pub fn row_line_with(r: &Row, w: usize, selected: bool, meta_w: usize) -> Line<'static> {
     let (glyph, gcolor) = r.status.glyph();
     let (word, wcolor) = match &r.label {
-        Some(l) => (l.as_str(), GREY),
+        Some(l) => (l.as_str(), grey()),
         None => r.status.word(),
     };
     let name_w = (w / 4).clamp(16, 34);
@@ -149,9 +165,9 @@ pub fn row_line_with(r: &Row, w: usize, selected: bool, meta_w: usize) -> Line<'
     let summary = fit(&r.summary, summary_w);
     let gap = w.saturating_sub(3 + name_w + 2 + width(word) + if summary.is_empty() { 0 } else { 3 + width(&summary) } + right_w);
     let name_style = if selected {
-        Style::default().fg(BRIGHT).add_modifier(Modifier::BOLD)
+        Style::default().fg(bright()).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(TEXT)
+        Style::default().fg(text())
     };
     let mut spans = vec![
         Span::styled(format!(" {glyph} "), Style::default().fg(gcolor)),
@@ -160,20 +176,40 @@ pub fn row_line_with(r: &Row, w: usize, selected: bool, meta_w: usize) -> Line<'
         Span::styled(word.to_string(), Style::default().fg(wcolor)),
     ];
     if !summary.is_empty() {
-        spans.push(Span::styled(if word.is_empty() { "".into() } else { " · ".to_string() }, Style::default().fg(GREY)));
-        spans.push(Span::styled(summary, Style::default().fg(GREY)));
+        spans.push(Span::styled(if word.is_empty() { "".into() } else { " · ".to_string() }, Style::default().fg(grey())));
+        spans.push(Span::styled(summary, Style::default().fg(grey())));
     }
     spans.push(Span::raw(" ".repeat(gap)));
-    spans.push(Span::styled(right, Style::default().fg(DIM)));
+    spans.push(Span::styled(right, Style::default().fg(dim())));
     let mut line = Line::from(spans);
     if selected {
-        line = line.style(Style::default().bg(SELECTED_BG));
+        line = line.style(Style::default().bg(selected_bg()));
     }
     line
 }
 
+/// Word-wrap to `w` columns, keeping existing line breaks.
+pub fn wrap(text: &str, w: usize) -> Vec<String> {
+    let w = w.max(10);
+    let mut out = Vec::new();
+    for para in text.lines() {
+        let mut line = String::new();
+        for word in para.split(' ') {
+            if width(&line) + width(word) + 1 > w && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        out.push(line);
+    }
+    out
+}
+
 fn rule(w: u16) -> Line<'static> {
-    Line::from(Span::styled("─".repeat(w as usize), Style::default().fg(DIM)))
+    Line::from(Span::styled("─".repeat(w as usize), Style::default().fg(dim())))
 }
 
 /// Draw the whole view. Returns the cursor position for the prompt.
@@ -188,13 +224,13 @@ pub fn render(buf: &mut Buffer, area: Rect, vm: &ViewModel) -> (u16, u16) {
 
     // Header: title, subtitle, blank, hint, blank.
     line_at(buf, y, Line::from(vec![
-        Span::styled(" orchestra", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  {}", vm.title), Style::default().fg(GREY)),
+        Span::styled(" orchestra", Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {}", vm.title), Style::default().fg(grey())),
     ]));
     y += 1;
-    line_at(buf, y, Line::from(Span::styled(format!(" {}", vm.subtitle), Style::default().fg(GREY))));
+    line_at(buf, y, Line::from(Span::styled(format!(" {}", vm.subtitle), Style::default().fg(grey()))));
     y += 2;
-    line_at(buf, y, Line::from(Span::styled(format!(" {}", fit(&vm.hint, w.saturating_sub(1))), Style::default().fg(GREY))));
+    line_at(buf, y, Line::from(Span::styled(format!(" {}", fit(&vm.hint, w.saturating_sub(1))), Style::default().fg(grey()))));
     y += 2;
 
     // Bottom block: rule, prompt, rule, footer.
@@ -207,8 +243,8 @@ pub fn render(buf: &mut Buffer, area: Rect, vm: &ViewModel) -> (u16, u16) {
     let list_h = list_h - sugg_h;
     for (i, (cmd, desc)) in vm.suggestions.iter().take(sugg_h).enumerate() {
         line_at(buf, list_top + (list_h + i) as u16, Line::from(vec![
-            Span::styled(format!("  {}", pad(cmd, 18)), Style::default().fg(if i == 0 { BRIGHT } else { TEXT })),
-            Span::styled(fit(desc, w.saturating_sub(20)), Style::default().fg(GREY)),
+            Span::styled(format!("  {}", pad(cmd, 18)), Style::default().fg(if i == 0 { bright() } else { text() })),
+            Span::styled(fit(desc, w.saturating_sub(20)), Style::default().fg(grey())),
         ]));
     }
     match &vm.overlay {
@@ -226,7 +262,7 @@ pub fn render(buf: &mut Buffer, area: Rect, vm: &ViewModel) -> (u16, u16) {
                 if gi > 0 && !lines.is_empty() {
                     lines.push(Line::raw(""));
                 }
-                lines.push(Line::from(Span::styled(format!(" {}", g.title), Style::default().fg(GREY))));
+                lines.push(Line::from(Span::styled(format!(" {}", g.title), Style::default().fg(grey()))));
                 for r in &g.rows {
                     let selected = vm.selected == Some(idx);
                     if selected {
@@ -237,7 +273,7 @@ pub fn render(buf: &mut Buffer, area: Rect, vm: &ViewModel) -> (u16, u16) {
                 }
             }
             if lines.is_empty() {
-                lines.push(Line::from(Span::styled(format!(" {}", vm.empty_text), Style::default().fg(DIM))));
+                lines.push(Line::from(Span::styled(format!(" {}", vm.empty_text), Style::default().fg(dim()))));
             }
             // Scroll so the selection stays visible.
             let offset = match sel_line {
@@ -255,18 +291,18 @@ pub fn render(buf: &mut Buffer, area: Rect, vm: &ViewModel) -> (u16, u16) {
     line_at(buf, py, rule(area.width));
     let prompt = if vm.input.is_empty() {
         Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(TEXT)),
-            Span::styled(vm.placeholder.clone(), Style::default().fg(DIM)),
+            Span::styled("❯ ", Style::default().fg(text())),
+            Span::styled(vm.placeholder.clone(), Style::default().fg(dim())),
         ])
     } else {
         Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(TEXT)),
-            Span::styled(vm.input.clone(), Style::default().fg(BRIGHT)),
+            Span::styled("❯ ", Style::default().fg(text())),
+            Span::styled(vm.input.clone(), Style::default().fg(bright())),
         ])
     };
     line_at(buf, py + 1, prompt);
     line_at(buf, py + 2, rule(area.width));
-    let footer_color = if vm.footer_is_status { YELLOW } else { GREY };
+    let footer_color = if vm.footer_is_status { yellow() } else { grey() };
     line_at(buf, py + 3, Line::from(Span::styled(
         format!("  {}", fit(&vm.footer, w.saturating_sub(2))),
         Style::default().fg(footer_color),
@@ -279,21 +315,29 @@ fn render_overlay(buf: &mut Buffer, area: Rect, o: &Overlay) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     match o {
         Overlay::Help(pairs) => {
-            lines.push(Line::from(Span::styled(" Shortcuts", Style::default().fg(GREY))));
+            lines.push(Line::from(Span::styled(" Shortcuts", Style::default().fg(grey()))));
             let col = w / 2;
             for chunk in pairs.chunks(2) {
                 let cell = |(k, v): &(String, String)| format!("   {:<14}{}", k, v);
                 let left = pad(&cell(&chunk[0]), col);
                 let right = chunk.get(1).map(cell).unwrap_or_default();
-                lines.push(Line::from(Span::styled(format!("{left}{right}"), Style::default().fg(TEXT))));
+                lines.push(Line::from(Span::styled(format!("{left}{right}"), Style::default().fg(text()))));
+            }
+        }
+        Overlay::Text { title, subtitle, body } => {
+            lines.push(Line::from(Span::styled(format!("  {title}"), Style::default().fg(title_color()).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled(format!("  {}", fit(subtitle, w.saturating_sub(2))), Style::default().fg(grey()))));
+            lines.push(Line::raw(""));
+            for l in wrap(body, w.saturating_sub(4)) {
+                lines.push(Line::from(Span::styled(format!("  {l}"), Style::default().fg(text()))));
             }
         }
         Overlay::Picker { title, subtitle, options, current, selected, filter } => {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {title}"), Style::default().fg(TITLE).add_modifier(Modifier::BOLD)),
-                Span::styled(if filter.is_empty() { String::new() } else { format!("   filter: {filter}") }, Style::default().fg(ACCENT)),
+                Span::styled(format!("  {title}"), Style::default().fg(title_color()).add_modifier(Modifier::BOLD)),
+                Span::styled(if filter.is_empty() { String::new() } else { format!("   filter: {filter}") }, Style::default().fg(accent())),
             ]));
-            lines.push(Line::from(Span::styled(format!("  {}", fit(subtitle, w.saturating_sub(2))), Style::default().fg(GREY))));
+            lines.push(Line::from(Span::styled(format!("  {}", fit(subtitle, w.saturating_sub(2))), Style::default().fg(grey()))));
             let visible = (area.height as usize).saturating_sub(3).max(1);
             let offset = selected.saturating_sub(visible.saturating_sub(1));
             let name_w = options.iter().map(|(n, _)| width(n) + 2).max().unwrap_or(10).min(w / 2);
@@ -303,18 +347,18 @@ fn render_overlay(buf: &mut Buffer, area: Rect, o: &Overlay) {
                 let arrow = if sel { "❯" } else if i == offset && offset > 0 { "↑" } else if i + 1 == offset + visible && i + 1 < options.len() { "↓" } else { " " };
                 let check = if Some(i) == *current { " ✔" } else { "" };
                 let num = format!("{:<num_w$}", format!("{}.", i + 1));
-                let name_style = if sel { Style::default().fg(BRIGHT).add_modifier(Modifier::BOLD) } else { Style::default().fg(TEXT) };
+                let name_style = if sel { Style::default().fg(bright()).add_modifier(Modifier::BOLD) } else { Style::default().fg(text()) };
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {arrow} {num} "), Style::default().fg(if sel { BRIGHT } else { GREY })),
+                    Span::styled(format!("  {arrow} {num} "), Style::default().fg(if sel { bright() } else { grey() })),
                     Span::styled(pad(&format!("{name}{check}"), name_w), name_style),
-                    Span::styled(fit(desc, w.saturating_sub(name_w + num_w + 6)), Style::default().fg(GREY)),
+                    Span::styled(fit(desc, w.saturating_sub(name_w + num_w + 6)), Style::default().fg(grey())),
                 ]));
             }
             if options.len() > offset + visible {
-                lines.push(Line::from(Span::styled(format!("     … +{} more", options.len() - offset - visible), Style::default().fg(DIM))));
+                lines.push(Line::from(Span::styled(format!("     … +{} more", options.len() - offset - visible), Style::default().fg(dim()))));
             }
             if options.is_empty() {
-                lines.push(Line::from(Span::styled("    no match", Style::default().fg(DIM))));
+                lines.push(Line::from(Span::styled("    no match", Style::default().fg(dim()))));
             }
         }
     }

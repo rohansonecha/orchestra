@@ -65,6 +65,7 @@ use ratatui::Terminal;
 
 mod agent_view;
 mod command;
+mod commands;
 mod config;
 mod history;
 mod import;
@@ -113,6 +114,7 @@ enum RowRef {
 #[derive(Debug, Clone, Default)]
 struct Activity {
     working: bool,
+    looping: bool,
     summary: Option<String>,
     last_active: Option<u64>,
 }
@@ -155,6 +157,18 @@ impl Picker {
 enum Overlay {
     Help,
     Picker(Picker),
+    /// A /btw answer or /recap.
+    Text { title: String, subtitle: String, body: String },
+    /// /bug draft waiting for Enter to file it.
+    Bug { title: String, body: String },
+}
+
+/// A finished /btw or /recap, from the worker thread.
+struct SideAnswer {
+    session: String,
+    question: String,
+    recap: bool,
+    result: Result<String, String>,
 }
 
 /// Inline input mode for the dispatch box.
@@ -206,6 +220,7 @@ struct App {
     /// a second or two) so the picker opens instantly.
     pi_models: Option<Vec<(String, String, String)>>,
     pi_models_rx: Option<std::sync::mpsc::Receiver<Vec<(String, String, String)>>>,
+    side_rx: Option<std::sync::mpsc::Receiver<SideAnswer>>,
 }
 
 impl App {
@@ -246,8 +261,10 @@ impl App {
                 });
                 Some(rx)
             },
+            side_rx: None,
         };
         app.rescan_import();
+        agent_view::set_light(app.config.light());
         app.reload_tree();
         app.selected_node_id = tree_view::default_selection(&app.tree, None);
         if !app.sessions.is_empty() {
@@ -336,7 +353,31 @@ impl App {
     }
 
     /// Refresh working/idle state and summaries (throttled; cheap).
+    fn poll_side_answer(&mut self) {
+        let Some(rx) = &self.side_rx else { return };
+        let Ok(ans) = rx.try_recv() else { return };
+        self.side_rx = None;
+        match (ans.recap, ans.result) {
+            (true, Ok(line)) => {
+                self.status_message = format!("{}: {line}", ans.session);
+                if let Some(a) = self.activity.get_mut(&ans.session) {
+                    a.summary = Some(line);
+                }
+            }
+            (false, Ok(text)) => {
+                self.overlay = Some(Overlay::Text {
+                    title: format!("btw · {}", ans.session),
+                    subtitle: ans.question,
+                    body: text,
+                });
+                self.status_message.clear();
+            }
+            (_, Err(e)) => self.status_message = format!("Side question failed: {e}"),
+        }
+    }
+
     fn refresh_activity(&mut self) {
+        self.poll_side_answer();
         if let Some(rx) = &self.pi_models_rx {
             if let Ok(m) = rx.try_recv() {
                 self.pi_models = Some(m);
@@ -365,7 +406,8 @@ impl App {
                 ),
                 None => (None, None),
             };
-            self.activity.insert(name, Activity { working, summary, last_active });
+            let looping = commands::loop_running(&name);
+            self.activity.insert(name, Activity { working, looping, summary, last_active });
         }
         if self.import.scanned.is_none_or(|t| t.elapsed().as_secs() >= 15) {
             self.rescan_import();
@@ -423,6 +465,21 @@ impl App {
                 self.clear_input();
                 self.open_import();
             }
+            command::DispatchCommand::Theme { theme } => {
+                self.clear_input();
+                self.config.theme = Some(theme.clone());
+                self.config.save();
+                agent_view::set_light(theme == "light");
+                set_pi_theme(&format!("orchestra-{theme}"));
+                self.status_message = format!(
+                    "{theme} theme — new pi sessions use orchestra-{theme}; in a running pi session pick it with /settings"
+                );
+                self.needs_clear = true;
+            }
+            command::DispatchCommand::Session { name, args } => {
+                self.clear_input();
+                self.run_command(&name, &args);
+            }
             command::DispatchCommand::Switch { target } if target.is_empty() => {
                 self.clear_input();
                 self.open_switch_picker();
@@ -439,6 +496,164 @@ impl App {
             }
             command::DispatchCommand::PlainPrompt { text } => {
                 self.dispatch_session(&text, self.config.default_backend);
+            }
+        }
+    }
+
+    /// Session commands (/code-review, /simplify, /loop, ...); see
+    /// commands.rs for what each sends.
+    fn run_command(&mut self, name: &str, args: &str) {
+        let selected = self.selected();
+        let need = |app: &mut App| -> Option<usize> {
+            if selected.is_none() {
+                app.status_message = format!("/{name}: select one of your orchestra sessions first");
+            }
+            selected
+        };
+        match name {
+            "code-review" => {
+                // A separate, read-only reviewer on the selected session's
+                // worktree (or the launch dir), on the default agent.
+                let (cwd, label) = match selected {
+                    Some(i) => (self.sessions[i].worktree_path.clone(), self.sessions[i].name.clone()),
+                    None => (
+                        self.repo.as_ref().map(|r| r.root.clone()).unwrap_or_else(|| self.launch_dir.clone()).to_string_lossy().to_string(),
+                        "repo".to_string(),
+                    ),
+                };
+                let backend = self.config.default_backend;
+                let rname = format!("review-{}-{}", label.chars().take(24).collect::<String>(), tree_store::unix_now() % 1000);
+                let mut sess = Session::new(rname.clone(), commands::review_prompt(args), cwd, backend);
+                sess.model = self.config.model_for(backend);
+                let who = switch::Target { backend, model: sess.model.clone() }.label();
+                self.start_session(sess, format!("Reviewing {label} with {who} as {rname}"), Vec::new());
+            }
+            "simplify" | "autofix-pr" => {
+                let Some(i) = need(self) else { return };
+                let s = &self.sessions[i];
+                let text = commands::session_prompt(s.backend, name, args);
+                self.status_message = match commands::send_to_session(&s.name, &text) {
+                    Ok(()) => format!("Sent /{name} to {}", s.name),
+                    Err(e) => e,
+                };
+            }
+            "loop" => {
+                let Some(i) = need(self) else { return };
+                let sname = self.sessions[i].name.clone();
+                if args.trim() == "stop" {
+                    self.status_message = if commands::stop_loop(&sname) {
+                        format!("Stopped the loop on {sname}")
+                    } else {
+                        format!("{sname} has no loop")
+                    };
+                    return;
+                }
+                match commands::parse_loop(args) {
+                    None => self.status_message = "usage: /loop [30s|5m|1h] <prompt>   ·   /loop stop".into(),
+                    Some((secs, prompt)) => {
+                        self.status_message = match commands::start_loop(&sname, secs, &prompt) {
+                            Ok(()) => format!("{sname} gets \"{}\" every {} when idle — /loop stop to end", import::one_line(&prompt, 40), fmt_secs(secs)),
+                            Err(e) => e,
+                        };
+                    }
+                }
+                self.activity_scanned = None;
+            }
+            "background" => {
+                if args.trim().is_empty() {
+                    self.status_message = "Every orchestra session already runs in the background; /background <prompt> starts one".into();
+                } else {
+                    self.dispatch_session(args.trim(), self.config.default_backend);
+                }
+            }
+            "branch" => {
+                let Some(i) = need(self) else { return };
+                self.status_message = self.branch_session(i, args.trim());
+            }
+            "btw" | "recap" => {
+                let Some(i) = need(self) else { return };
+                let recap = name == "recap";
+                let question = if recap { commands::RECAP_QUESTION.to_string() } else { args.trim().to_string() };
+                if question.is_empty() {
+                    self.status_message = "usage: /btw <question>".into();
+                    return;
+                }
+                let Some(model) = commands::side_model(self.config.model_for(Backend::Pi)) else {
+                    self.status_message = "/btw needs a pi model (add one to ~/.pi/agent/models.json)".into();
+                    return;
+                };
+                let sess = self.sessions[i].clone_for_read();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let q = question.clone();
+                let m = model.clone();
+                std::thread::spawn(move || {
+                    let result = commands::side_question(&sess, &q, &m);
+                    let _ = tx.send(SideAnswer { session: sess.name.clone(), question: q, recap, result });
+                });
+                self.side_rx = Some(rx);
+                self.activity_scanned = None;
+                self.status_message = format!("Asking {} about {} (its conversation is not changed)…", model.rsplit('/').next().unwrap_or(&model), self.sessions[i].name);
+            }
+            "bug" => {
+                if args.trim().is_empty() {
+                    self.status_message = "usage: /bug <what went wrong>".into();
+                    return;
+                }
+                let sel = selected.map(|i| &self.sessions[i]);
+                let (title, body) = commands::bug_draft(args, sel, "");
+                self.overlay = Some(Overlay::Bug { title, body });
+            }
+            "teleport" => {
+                self.status_message = "/teleport is coming next".into();
+            }
+            _ => {}
+        }
+    }
+
+    /// /branch: a new session with a copy of this one's conversation and
+    /// work, so the two can go different ways.
+    fn branch_session(&mut self, i: usize, name: &str) -> String {
+        let src = self.sessions[i].clone_for_read();
+        let new_name = if name.is_empty() {
+            format!("{}-b{}", src.name.chars().take(28).collect::<String>(), tree_store::unix_now() % 1000)
+        } else {
+            rename::sanitize_name(name)
+        };
+        let mut dst = Session::new(new_name.clone(), src.prompt.clone(), String::new(), src.backend);
+        dst.model = src.model.clone();
+        let mut carried = String::new();
+        let src_dir = std::path::Path::new(&src.worktree_path);
+        match repo::detect(src_dir) {
+            Some(r) => {
+                let head = repo::git(src_dir, &["rev-parse", "HEAD"]);
+                match worktree::create_worktree_from(&r, &new_name, head.as_deref()) {
+                    Ok(wt) => {
+                        match worktree::carry_changes(src_dir, &wt.path) {
+                            Ok(n) if n > 0 => carried = " with its uncommitted work".into(),
+                            Ok(_) => {}
+                            Err(e) => carried = format!(" (uncommitted work not copied: {e})"),
+                        }
+                        dst.worktree_path = wt.path.to_string_lossy().to_string();
+                        dst.repo_root = Some(r.root.to_string_lossy().to_string());
+                        dst.base_ref = head.or(Some(r.base_ref.clone()));
+                        dst.branch = Some(wt.branch);
+                    }
+                    Err(e) => return format!("Branch failed: {e}"),
+                }
+            }
+            None => dst.worktree_path = src.worktree_path.clone(),
+        }
+        match switch::branch_conversation(&src, &mut dst) {
+            Ok(_) => {
+                let msg = format!("Branched {} into {new_name}{carried}", src.name);
+                self.start_session(dst, msg.clone(), Vec::new());
+                msg
+            }
+            Err(e) => {
+                if let Some((repo, wt, branch)) = dst.owned_worktree() {
+                    let _ = worktree::remove_worktree(&repo, &wt, &branch);
+                }
+                format!("Branch failed: {e}")
             }
         }
     }
@@ -683,8 +898,13 @@ impl App {
 
     /// The orchestra session already attached to an external session.
     fn managing(&self, ext: &ExternalSession) -> Option<&Session> {
+        let path = ext.path.to_string_lossy();
         self.sessions.iter().find(|s| {
-            s.external_id.as_deref() == Some(ext.id.as_str())
+            // Transcripts orchestra wrote or adopted for a session (switch
+            // segments) belong to that session, not the "not in
+            // orchestra" list.
+            s.segments.iter().any(|seg| seg.path == path)
+                || s.external_id.as_deref() == Some(ext.id.as_str())
                 || (s.backend == ext.backend && s.backend == Backend::Claude && s.id == ext.id)
                 || (s.backend == Backend::Codex && ext.backend == Backend::Codex
                     && s.external_id.is_none() && s.worktree_path == ext.cwd)
@@ -1223,6 +1443,31 @@ fn pane_working(name: &str) -> bool {
     text.contains("esc to interrupt") || text.contains("Working...") || text.contains("to interrupt)")
 }
 
+/// Point pi's settings at one of orchestra's themes, if it is installed.
+fn set_pi_theme(name: &str) {
+    let dir = paths::home().join(".pi").join("agent");
+    if !dir.join("themes").join(format!("{name}.json")).exists() {
+        return;
+    }
+    let path = dir.join("settings.json");
+    let mut v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(o) = v.as_object_mut() {
+        o.insert("theme".into(), serde_json::json!(name));
+        let _ = std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default());
+    }
+}
+
+fn fmt_secs(s: u64) -> String {
+    match s {
+        s if s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
 /// "~/x" for paths under $HOME.
 fn tilde(p: &std::path::Path) -> String {
     let home = paths::home();
@@ -1242,6 +1487,17 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/pi", "<prompt> — start a pi session"),
     ("/backend", "<pi|claude|codex> — default agent for new sessions"),
     ("/import", "jump to your Claude Code and Codex sessions"),
+    ("/code-review", "[target] — a read-only reviewer on the selected session's work"),
+    ("/simplify", "clean up the selected session's changes (it applies them)"),
+    ("/autofix-pr", "[pr] — fix the selected session's failing checks and review comments"),
+    ("/loop", "[5m] <prompt> — resend a prompt when idle; /loop stop"),
+    ("/branch", "[name] — fork the selected session: conversation and work"),
+    ("/btw", "<question> — ask about the selected session without interrupting it"),
+    ("/recap", "one-line recap of the selected session"),
+    ("/background", "<prompt> — start a session without opening it"),
+    ("/bug", "<what went wrong> — draft a GitHub issue for orchestra"),
+    ("/theme", "<light|dark> — colors for orchestra and new pi sessions"),
+    ("/teleport", "move the selected session to a SkyPilot box"),
     ("/rename", "<name> — rename the selected session"),
     ("/agent", "<name> — spawn a sub-agent"),
 ];
@@ -1320,6 +1576,28 @@ fn main() -> anyhow::Result<()> {
             }
             "rename" => return rename_cli(),
             "claude-open" => return claude_open_cli(),
+            // Used by the copy-mode Left binding.
+            "is-orchestra" => {
+                let name = std::env::args().nth(2).unwrap_or_default();
+                std::process::exit(if paths::sessions_dir().join(&name).join("state.json").exists() { 0 } else { 1 });
+            }
+            // Used by /loop's runner.
+            "tmux-idle" => {
+                let name = std::env::args().nth(2).unwrap_or_default();
+                std::process::exit(if session::tmux_alive(&name) && !pane_working(&name) { 0 } else { 1 });
+            }
+            "send" => {
+                let a: Vec<String> = std::env::args().skip(2).collect();
+                if a.len() != 2 {
+                    eprintln!("usage: orchestra send <session> <text>");
+                    std::process::exit(2);
+                }
+                if let Err(e) = commands::send_to_session(&a[0], &a[1]) {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             "tmux-left" => {
                 // Called by the tmux Left binding; exit 0 means detach.
                 let a: Vec<String> = std::env::args().skip(2).collect();
@@ -1529,9 +1807,23 @@ fn handle_tree_key(app: &mut App, key: event::KeyEvent) -> bool {
 /// key was consumed.
 fn handle_overlay_key(app: &mut App, key: event::KeyEvent) -> bool {
     let Some(overlay) = app.overlay.take() else { return false };
-    let Overlay::Picker(mut p) = overlay else {
-        // Shortcut list: any key closes it.
-        return true;
+    let mut p = match overlay {
+        Overlay::Picker(p) => p,
+        Overlay::Bug { title, body } => {
+            match key.code {
+                KeyCode::Enter => {
+                    app.status_message = match commands::file_bug(&title, &body) {
+                        Ok(url) => format!("Filed {url}"),
+                        Err(e) => format!("gh issue create failed: {e}"),
+                    };
+                }
+                KeyCode::Esc => app.status_message = "Bug report not filed".into(),
+                _ => app.overlay = Some(Overlay::Bug { title, body }),
+            }
+            return true;
+        }
+        // Shortcut list and answers: any key closes them.
+        _ => return true,
     };
     let n = p.visible().len();
     match key.code {
@@ -1796,7 +2088,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
                 name: s.name.clone(),
                 label: None,
                 summary: act.and_then(|a| a.summary.clone()).unwrap_or_else(|| s.prompt.clone()),
-                meta: agent.label(),
+                meta: if act.is_some_and(|a| a.looping) { format!("↻ {}", agent.label()) } else { agent.label() },
                 age: ago(act.and_then(|a| a.last_active).unwrap_or(s.created_at)),
             }
         })
@@ -1859,6 +2151,16 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
         )),
+        Some(Overlay::Text { title, subtitle, body }) => Some(agent_view::Overlay::Text {
+            title: title.clone(),
+            subtitle: subtitle.clone(),
+            body: body.clone(),
+        }),
+        Some(Overlay::Bug { title, body }) => Some(agent_view::Overlay::Text {
+            title: format!("File a GitHub issue on {}", commands::BUG_REPO),
+            subtitle: format!("Title: {title}"),
+            body: body.clone(),
+        }),
         Some(Overlay::Picker(p)) => {
             let vis = p.visible();
             let current = app.picker_current(&p.purpose, &vis.iter().map(|o| (*o).clone()).collect::<Vec<_>>());
@@ -1887,6 +2189,10 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         app.status_message.clone()
     } else if matches!(app.overlay, Some(Overlay::Picker(_))) {
         "enter to select · 1–9 to pick · type to filter · esc to cancel".into()
+    } else if matches!(app.overlay, Some(Overlay::Bug { .. })) {
+        "enter to file this issue (public) · esc to cancel".into()
+    } else if matches!(app.overlay, Some(Overlay::Text { .. })) {
+        "any key to close".into()
     } else {
         format!("⏵ {} · / for commands · ? for shortcuts", default.label())
     };

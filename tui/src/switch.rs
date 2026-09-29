@@ -177,6 +177,50 @@ fn gather(segments: &[Segment]) -> std::io::Result<Vec<Msg>> {
     Ok(all)
 }
 
+/// The session's whole conversation so far (all segments, or just the
+/// current agent's transcript if it never switched). Read-only.
+pub fn conversation(sess: &Session) -> std::io::Result<Vec<Msg>> {
+    let mut segs = sess.segments.clone();
+    match (native_transcript(sess), segs.last_mut()) {
+        (Some(p), Some(last)) if last.backend == sess.backend => last.path = p.to_string_lossy().to_string(),
+        (Some(p), None) => segs.push(Segment { backend: sess.backend, model: None, path: p.to_string_lossy().to_string(), seed: 0 }),
+        _ => {}
+    }
+    gather(&segs)
+}
+
+/// Give `dst` (a new session on the same agent) a copy of `src`'s
+/// conversation, so the two can diverge: pi and Claude Code get a copy of
+/// the agent's own transcript; Codex a rewritten one.
+pub fn branch_conversation(src: &Session, dst: &mut Session) -> Result<usize, String> {
+    let native = native_transcript(src).ok_or("the session has no conversation yet")?;
+    dst.origin = Origin::Resumed;
+    match src.backend {
+        Backend::Pi => {
+            let dir = dst.pi_session_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let file = dir.join(native.file_name().ok_or("bad transcript path")?);
+            std::fs::copy(&native, &file).map_err(|e| e.to_string())?;
+            dst.external_id = None;
+            Ok(history::pi_entry_count(&file))
+        }
+        Backend::Claude => {
+            let id = uuid::Uuid::new_v4().to_string();
+            let file = history::claude_project_dir(&dst.worktree_path).join(format!("{id}.jsonl"));
+            history::fork_claude(&native, &file, &id).map_err(|e| e.to_string())?;
+            dst.external_id = Some(id);
+            Ok(history::line_count(&file))
+        }
+        Backend::Codex => {
+            let msgs = history::normalize(conversation(src).map_err(|e| e.to_string())?);
+            let n = msgs.len();
+            let (id, _) = history::write_codex(&msgs, &dst.worktree_path).map_err(|e| e.to_string())?;
+            dst.external_id = Some(id);
+            Ok(n)
+        }
+    }
+}
+
 /// Switch `sess` (state only — the caller restarts its tmux session).
 /// Returns a one-line summary for the status bar.
 pub fn switch(sess: &mut Session, target: &Target) -> Result<String, String> {

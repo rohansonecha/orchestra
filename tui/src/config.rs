@@ -17,6 +17,10 @@ pub struct Config {
     /// ORCHESTRA_PROVIDER / ORCHESTRA_MODEL or pi's settings).
     #[serde(default)]
     pub models: BTreeMap<String, String>,
+    /// "light" or "dark" (default): orchestra's list palette, and the pi
+    /// theme new sessions use (orchestra-light / orchestra-dark).
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 impl Config {
@@ -32,6 +36,10 @@ impl Config {
         if let Ok(s) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(paths::config_file(), s);
         }
+    }
+
+    pub fn light(&self) -> bool {
+        self.theme.as_deref() == Some("light")
     }
 
     pub fn model_for(&self, b: Backend) -> Option<String> {
