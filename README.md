@@ -129,6 +129,9 @@ agent's own session file and resumes it there:
 - Long tool output is shortened, and a short note tells the model the
   conversation was moved and that it should re-read files before editing.
 
+See [docs/switching-agents.md](docs/switching-agents.md) for why moving tool
+calls between agents is hard and how each problem is handled.
+
 ### Session commands
 These work on the selected session, whatever agent it runs on:
 
