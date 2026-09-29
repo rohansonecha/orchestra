@@ -63,7 +63,10 @@ yet. `Tab` switches to Tree View and back.
 - `Ctrl+C` — quit
 
 Letters always go into the prompt; shortcuts use Ctrl, as in Claude Code's
-agents view.
+agents view. The prompt has the usual editing keys: Option+Delete, Ctrl+W or
+Ctrl+Backspace delete a word, Cmd+Delete or Ctrl+U delete to the start of the
+line, Ctrl+K to the end, Ctrl+A / Ctrl+E or Home / End jump, and Option or
+Ctrl with ← / → move by word.
 
 ### Work in parallel
 Worktrees follow the same layout Claude Code uses for `.claude/worktrees/`:

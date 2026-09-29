@@ -69,6 +69,7 @@ mod commands;
 mod config;
 mod history;
 mod import;
+mod line_edit;
 mod paths;
 mod rename;
 mod repo;
@@ -1885,13 +1886,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Convert a character index to a byte index in a string.
-fn char_to_byte(s: &str, char_idx: usize) -> usize {
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(i, _)| i)
-        .unwrap_or_else(|| s.len())
-}
 
 fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
     // Clear status message on any key press — it's transient.
@@ -1902,14 +1896,6 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
         return handle_rename_key(app, key);
     }
 
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-
-    // --- Alt (Option) modified keys: word-level operations (Agent View) ---
-    if alt && app.mode == ViewMode::Agent {
-        if handle_alt_key(app, key) {
-            return false;
-        }
-    }
 
     match app.mode {
         ViewMode::Tree => handle_tree_key(app, key),
@@ -1921,86 +1907,18 @@ fn handle_rename_key(app: &mut App, key: event::KeyEvent) -> bool {
     match key.code {
         KeyCode::Enter => app.commit_rename(),
         KeyCode::Esc => app.cancel_rename(),
-        KeyCode::Backspace => {
-            if app.cursor_pos > 0 {
-                let byte_idx = char_to_byte(&app.input, app.cursor_pos - 1);
-                app.input.remove(byte_idx);
-                app.cursor_pos -= 1;
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.cancel_rename(),
+        _ => {
+            if line_edit::apply(&mut app.input, &mut app.cursor_pos, key) == line_edit::Edit::NotHandled {
+                match key.code {
+                    KeyCode::Left => app.cursor_pos = app.cursor_pos.saturating_sub(1),
+                    KeyCode::Right => app.cursor_pos = (app.cursor_pos + 1).min(app.input.chars().count()),
+                    _ => {}
+                }
             }
         }
-        KeyCode::Left => {
-            if app.cursor_pos > 0 {
-                app.cursor_pos -= 1;
-            }
-        }
-        KeyCode::Right => {
-            if app.cursor_pos < app.input.chars().count() {
-                app.cursor_pos += 1;
-            }
-        }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.cancel_rename();
-        }
-        KeyCode::Char(c) => {
-            let byte_idx = char_to_byte(&app.input, app.cursor_pos);
-            app.input.insert(byte_idx, c);
-            app.cursor_pos += 1;
-        }
-        _ => {}
     }
     false
-}
-
-/// Handle Alt-modified keys for word-level editing. Returns true if handled.
-fn handle_alt_key(app: &mut App, key: event::KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Left | KeyCode::Char('b') => {
-            if app.cursor_pos > 0 {
-                let chars: Vec<char> = app.input.chars().collect();
-                let mut pos = app.cursor_pos;
-                while pos > 0 && chars[pos - 1].is_whitespace() {
-                    pos -= 1;
-                }
-                while pos > 0 && !chars[pos - 1].is_whitespace() {
-                    pos -= 1;
-                }
-                app.cursor_pos = pos;
-            }
-            true
-        }
-        KeyCode::Right | KeyCode::Char('f') => {
-            let chars: Vec<char> = app.input.chars().collect();
-            if app.cursor_pos < chars.len() {
-                let mut pos = app.cursor_pos;
-                while pos < chars.len() && !chars[pos].is_whitespace() {
-                    pos += 1;
-                }
-                while pos < chars.len() && chars[pos].is_whitespace() {
-                    pos += 1;
-                }
-                app.cursor_pos = pos;
-            }
-            true
-        }
-        KeyCode::Backspace | KeyCode::Delete | KeyCode::Char('\u{7f}') | KeyCode::Char('\u{8}') => {
-            if app.cursor_pos > 0 {
-                let chars: Vec<char> = app.input.chars().collect();
-                let mut pos = app.cursor_pos;
-                while pos > 0 && chars[pos - 1].is_whitespace() {
-                    pos -= 1;
-                }
-                while pos > 0 && !chars[pos - 1].is_whitespace() {
-                    pos -= 1;
-                }
-                let start = char_to_byte(&app.input, pos);
-                let end = char_to_byte(&app.input, app.cursor_pos);
-                app.input.drain(start..end);
-                app.cursor_pos = pos;
-            }
-            true
-        }
-        _ => false,
-    }
 }
 
 fn handle_tree_key(app: &mut App, key: event::KeyEvent) -> bool {
@@ -2088,7 +2006,7 @@ fn handle_overlay_key(app: &mut App, key: event::KeyEvent) -> bool {
             return true;
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
-        KeyCode::Char(c) => {
+        KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             p.filter.push(c);
             p.selected = 0;
         }
@@ -2189,8 +2107,14 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
     }
     // Any key other than Ctrl+X cancels a pending delete.
     app.pending_delete = None;
+    if ctrl && key.code == KeyCode::Char('c') {
+        return true;
+    }
+    // Typing and line editing (Ctrl+W, Option+Delete, Ctrl+U, Ctrl+A/E, ...).
+    if line_edit::apply(&mut app.input, &mut app.cursor_pos, key) != line_edit::Edit::NotHandled {
+        return false;
+    }
     match key.code {
-        KeyCode::Char('c') if ctrl => return true,
         // Esc clears what you typed (it used to jump to Tree View).
         KeyCode::Esc => app.clear_input(),
         KeyCode::Tab => {
@@ -2220,18 +2144,6 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
             } else if app.input.trim().is_empty() {
                 open_selected(app);
             }
-        }
-        KeyCode::Backspace => {
-            if app.cursor_pos > 0 {
-                let byte_idx = char_to_byte(&app.input, app.cursor_pos - 1);
-                app.input.remove(byte_idx);
-                app.cursor_pos -= 1;
-            }
-        }
-        KeyCode::Char(c) => {
-            let byte_idx = char_to_byte(&app.input, app.cursor_pos);
-            app.input.insert(byte_idx, c);
-            app.cursor_pos += 1;
         }
         _ => {}
     }
