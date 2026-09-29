@@ -35,8 +35,50 @@ pub struct Plan {
     pub warnings: Vec<String>,
 }
 
-/// SkyPilot API server from ~/.sky/config.yaml (read locally; no network).
+/// A value from the environment, else from ~/.orchestra/env.
+fn setting(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty()).or_else(|| {
+        let env = std::fs::read_to_string(paths::env_file()).ok()?;
+        env.lines().rev().find_map(|l| {
+            let l = l.trim().strip_prefix("export ").unwrap_or(l.trim());
+            let v = l.strip_prefix(key)?.strip_prefix('=')?.trim().trim_matches('"').to_string();
+            let v = match v.strip_prefix("~/") {
+                Some(rest) => paths::home().join(rest).to_string_lossy().to_string(),
+                None => v,
+            };
+            (!v.is_empty()).then_some(v)
+        })
+    })
+}
+
+/// orchestra's own SkyPilot API server, if configured: SKY_API_ENDPOINT
+/// with a token in ORCHESTRA_SKY_API_TOKEN or the file named by
+/// ORCHESTRA_SKY_TOKEN_FILE. Used for every `sky` call /teleport makes, so
+/// it never depends on (or changes) the machine-wide ~/.sky/config.yaml.
+fn orchestra_endpoint() -> Option<String> {
+    setting("SKY_API_ENDPOINT")
+}
+
+/// Environment prefix for `sky` commands: the endpoint and a reference to
+/// the token (the token value itself is never written into commands).
+pub fn sky_env() -> String {
+    let Some(ep) = orchestra_endpoint() else { return String::new() };
+    let token = if setting("ORCHESTRA_SKY_API_TOKEN").is_some() {
+        " SKYPILOT_SERVICE_ACCOUNT_TOKEN=\"$ORCHESTRA_SKY_API_TOKEN\"".to_string()
+    } else if let Some(f) = setting("ORCHESTRA_SKY_TOKEN_FILE") {
+        format!(" SKYPILOT_SERVICE_ACCOUNT_TOKEN=\"$(cat {})\"", sq(&f))
+    } else {
+        String::new()
+    };
+    format!("SKYPILOT_API_SERVER_ENDPOINT={}{token} ", sq(&ep))
+}
+
+/// The API server /teleport will use: orchestra's own if configured, else
+/// the machine-wide one from ~/.sky/config.yaml (read locally; no network).
 pub fn api_endpoint() -> Option<String> {
+    if let Some(ep) = orchestra_endpoint() {
+        return Some(ep);
+    }
     let text = std::fs::read_to_string(paths::home().join(".sky").join("config.yaml")).ok()?;
     let mut in_api = false;
     for line in text.lines() {
@@ -60,13 +102,7 @@ fn infra(arg: &str) -> Option<String> {
     if !arg.is_empty() {
         return Some(arg.to_string());
     }
-    std::env::var("SKY_INFRA").ok().filter(|v| !v.is_empty()).or_else(|| {
-        let env = std::fs::read_to_string(paths::env_file()).ok()?;
-        env.lines().rev().find_map(|l| {
-            let l = l.trim().strip_prefix("export ").unwrap_or(l.trim());
-            l.strip_prefix("SKY_INFRA=").map(|v| v.trim_matches('"').to_string()).filter(|v| !v.is_empty())
-        })
-    })
+    setting("SKY_INFRA")
 }
 
 pub fn cluster_name(session: &str) -> String {
@@ -194,7 +230,8 @@ pub fn plan(sess: &Session, infra_arg: &str) -> Result<Plan, String> {
     std::fs::write(&yaml, y).map_err(|e| e.to_string())?;
     let secret_flags: String = secrets.iter().map(|s| format!(" --secret {s}")).collect();
     let launch = format!(
-        "sky launch -y -d -c {cluster} {}{secret_flags}",
+        "{}sky launch -y -d -c {cluster} {}{secret_flags}",
+        sky_env(),
         sq(&yaml.to_string_lossy())
     );
     let mut sends = vec![format!("worktree {} (synced as ~/sky_workdir, uncommitted work included)", sess.worktree_path)];
@@ -271,7 +308,8 @@ mod tests {
         assert!(!y.contains("sk-secret-value"), "secret values never in the YAML");
         assert!(y.contains("pi --session-dir ~/.orchestra/pi-sessions/"));
         assert!(p.launch.contains("--secret ORCHESTRA_API_KEY"));
-        assert!(p.launch.starts_with("sky launch -y -d -c orch-tp-test "));
+        assert!(p.launch.contains("sky launch -y -d -c orch-tp-test "));
+        assert!(!p.launch.contains("sk-secret-value"));
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(p.yaml.parent().unwrap());
     }

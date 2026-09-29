@@ -641,8 +641,8 @@ impl App {
         }
         session::save_session(sess);
         self.status_message = format!(
-            "Launching {} on {} — open the session to watch; stop the box later with: sky down {}",
-            plan.cluster, plan.infra, plan.cluster
+            "Launching {} on {} — open the session to watch; stop the box later with: {}sky down {}",
+            plan.cluster, plan.infra, teleport::sky_env(), plan.cluster
         );
     }
 
@@ -2248,7 +2248,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
                 for w in &plan.warnings {
                     b.push_str(&format!("\n⚠ {w}\n"));
                 }
-                b.push_str(&format!("\nThe cluster costs money until you stop it: sky down {}\nTask file: {}", plan.cluster, plan.yaml.display()));
+                b.push_str(&format!("\nThe cluster costs money until you stop it: {}sky down {}\nTask file: {}", teleport::sky_env(), plan.cluster, plan.yaml.display()));
                 b
             },
         }),
