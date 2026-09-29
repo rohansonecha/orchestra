@@ -88,7 +88,8 @@ pub fn parse(input: &str) -> DispatchCommand {
             model: (!rest.is_empty()).then(|| rest.to_string()),
         },
         "import" => DispatchCommand::Import,
-        "switch" if !rest.is_empty() => DispatchCommand::Switch { target: rest.to_string() },
+        // No target: open the picker.
+        "switch" => DispatchCommand::Switch { target: rest.to_string() },
         _ => DispatchCommand::Unknown { raw: trimmed.to_string() },
     }
 }
@@ -192,7 +193,7 @@ mod tests {
         );
         assert_eq!(parse("/import"), DispatchCommand::Import);
         assert_eq!(parse("/switch claude:opus"), DispatchCommand::Switch { target: "claude:opus".into() });
-        assert!(matches!(parse("/switch"), DispatchCommand::Unknown { .. }));
+        assert_eq!(parse("/switch"), DispatchCommand::Switch { target: String::new() });
     }
 
     #[test]

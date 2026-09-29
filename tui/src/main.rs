@@ -46,6 +46,8 @@
 // from the session list so Tree View is never empty on first run.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Instant, SystemTime};
 use std::io;
 use std::process::Command;
 
@@ -61,6 +63,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Terminal;
 
+mod agent_view;
 mod command;
 mod config;
 mod history;
@@ -88,15 +91,70 @@ const ROOT_AGENT_ID: &str = "agent-main-box";
 enum ViewMode {
     Tree,
     Agent,
-    Import,
 }
 
-/// Import View state: external sessions found on disk.
+/// Claude Code / Codex sessions found on disk, listed under orchestra's
+/// own sessions so they can be adopted in place.
 struct ImportState {
     items: Vec<ExternalSession>,
-    list_state: ListState,
     /// Show sessions from every directory, not just the current repo.
     all_repos: bool,
+    scanned: Option<Instant>,
+}
+
+/// A row of the main list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowRef {
+    Session(usize),
+    External(usize),
+}
+
+/// What each session is doing, refreshed every couple of seconds.
+#[derive(Debug, Clone, Default)]
+struct Activity {
+    working: bool,
+    summary: Option<String>,
+    last_active: Option<u64>,
+}
+
+/// One choice in the agent/model picker.
+#[derive(Debug, Clone)]
+struct PickOption {
+    name: String,
+    desc: String,
+    target: switch::Target,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PickPurpose {
+    /// Move this session (by name) to the picked agent/model.
+    Switch(String),
+    /// Default agent/model for new sessions.
+    Default,
+}
+
+#[derive(Debug, Clone)]
+struct Picker {
+    purpose: PickPurpose,
+    options: Vec<PickOption>,
+    selected: usize,
+    filter: String,
+}
+
+impl Picker {
+    fn visible(&self) -> Vec<&PickOption> {
+        let f = self.filter.to_lowercase();
+        self.options
+            .iter()
+            .filter(|o| f.is_empty() || format!("{} {}", o.name, o.desc).to_lowercase().contains(&f))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Overlay {
+    Help,
+    Picker(Picker),
 }
 
 /// Inline input mode for the dispatch box.
@@ -137,6 +195,17 @@ struct App {
     launch_dir: std::path::PathBuf,
     config: Config,
     import: ImportState,
+    /// Selected row of the main list (see `rows`).
+    sel: usize,
+    activity: HashMap<String, Activity>,
+    /// Transcript path → (mtime, latest reply line), for list summaries.
+    summaries: HashMap<PathBuf, (SystemTime, Option<String>)>,
+    activity_scanned: Option<Instant>,
+    overlay: Option<Overlay>,
+    /// `pi --list-models`, loaded in the background at startup (it takes
+    /// a second or two) so the picker opens instantly.
+    pi_models: Option<Vec<(String, String, String)>>,
+    pi_models_rx: Option<std::sync::mpsc::Receiver<Vec<(String, String, String)>>>,
 }
 
 impl App {
@@ -163,8 +232,22 @@ impl App {
             repo,
             launch_dir,
             config: Config::load(),
-            import: ImportState { items: Vec::new(), list_state: ListState::default(), all_repos: false },
+            import: ImportState { items: Vec::new(), all_repos: false, scanned: None },
+            sel: 0,
+            activity: HashMap::new(),
+            summaries: HashMap::new(),
+            activity_scanned: None,
+            overlay: None,
+            pi_models: None,
+            pi_models_rx: {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(config::pi_models_table());
+                });
+                Some(rx)
+            },
         };
+        app.rescan_import();
         app.reload_tree();
         app.selected_node_id = tree_view::default_selection(&app.tree, None);
         if !app.sessions.is_empty() {
@@ -189,31 +272,104 @@ impl App {
         self.selected_node_id = tree_view::default_selection(&self.tree, self.selected_node_id.as_deref());
     }
 
+    /// Rows of the main list: orchestra sessions, then Claude Code and
+    /// Codex sessions not in orchestra yet.
+    fn rows(&self) -> Vec<RowRef> {
+        let mut rows: Vec<RowRef> = (0..self.sessions.len()).map(RowRef::Session).collect();
+        for backend in [Backend::Claude, Backend::Codex] {
+            rows.extend(
+                self.import
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.backend == backend && self.managing(e).is_none())
+                    .map(|(i, _)| RowRef::External(i)),
+            );
+        }
+        rows
+    }
+
+    fn selected_row(&self) -> Option<RowRef> {
+        let rows = self.rows();
+        rows.get(self.sel.min(rows.len().saturating_sub(1))).copied()
+    }
+
+    /// Selected orchestra session, if the selection is one.
     fn selected(&self) -> Option<usize> {
-        self.list_state.selected()
+        match self.selected_row() {
+            Some(RowRef::Session(i)) => Some(i),
+            _ => None,
+        }
+    }
+
+    fn select_session(&mut self, idx: usize) {
+        if let Some(p) = self.rows().iter().position(|r| *r == RowRef::Session(idx)) {
+            self.sel = p;
+        }
     }
 
     fn move_up(&mut self) {
-        if self.sessions.is_empty() {
-            return;
+        let n = self.rows().len();
+        if n > 0 {
+            self.sel = if self.sel == 0 { n - 1 } else { self.sel.min(n - 1) - 1 };
         }
-        let i = match self.list_state.selected() {
-            Some(0) | None => self.sessions.len() - 1,
-            Some(i) => i - 1,
-        };
-        self.list_state.select(Some(i));
     }
 
     fn move_down(&mut self) {
-        if self.sessions.is_empty() {
+        let n = self.rows().len();
+        if n > 0 {
+            self.sel = if self.sel + 1 >= n { 0 } else { self.sel + 1 };
+        }
+    }
+
+    /// Transcript's latest reply line, cached by mtime.
+    fn summary_for(&mut self, backend: Backend, path: &std::path::Path) -> Option<String> {
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+        if let Some((t, s)) = self.summaries.get(path) {
+            if *t == mtime {
+                return s.clone();
+            }
+        }
+        let s = history::last_assistant_text(backend, path);
+        self.summaries.insert(path.to_path_buf(), (mtime, s.clone()));
+        s
+    }
+
+    /// Refresh working/idle state and summaries (throttled; cheap).
+    fn refresh_activity(&mut self) {
+        if let Some(rx) = &self.pi_models_rx {
+            if let Ok(m) = rx.try_recv() {
+                self.pi_models = Some(m);
+                self.pi_models_rx = None;
+            }
+        }
+        if self.activity_scanned.is_some_and(|t| t.elapsed().as_millis() < 1500) {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) if i >= self.sessions.len() - 1 => 0,
-            Some(i) => i + 1,
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+        self.activity_scanned = Some(Instant::now());
+        let names: Vec<(String, Backend, Option<PathBuf>)> = self
+            .sessions
+            .iter()
+            .map(|s| (s.name.clone(), s.backend, switch::native_transcript(s)))
+            .collect();
+        for (name, backend, path) in names {
+            let working = pane_working(&name);
+            let (summary, last_active) = match &path {
+                Some(p) => (
+                    self.summary_for(backend, p),
+                    std::fs::metadata(p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs()),
+                ),
+                None => (None, None),
+            };
+            self.activity.insert(name, Activity { working, summary, last_active });
+        }
+        if self.import.scanned.is_none_or(|t| t.elapsed().as_secs() >= 15) {
+            self.rescan_import();
+        }
     }
 
     fn dispatch_new(&mut self) {
@@ -255,6 +411,10 @@ impl App {
                 self.status_message = format!("Default backend: {}", self.backend_label(backend));
                 self.clear_input();
             }
+            command::DispatchCommand::Model { model: None } => {
+                self.clear_input();
+                self.open_picker(PickPurpose::Default);
+            }
             command::DispatchCommand::Model { model } => {
                 self.status_message = self.set_model(model);
                 self.clear_input();
@@ -262,6 +422,10 @@ impl App {
             command::DispatchCommand::Import => {
                 self.clear_input();
                 self.open_import();
+            }
+            command::DispatchCommand::Switch { target } if target.is_empty() => {
+                self.clear_input();
+                self.open_switch_picker();
             }
             command::DispatchCommand::Switch { target } => {
                 self.clear_input();
@@ -275,6 +439,82 @@ impl App {
             }
             command::DispatchCommand::PlainPrompt { text } => {
                 self.dispatch_session(&text, self.config.default_backend);
+            }
+        }
+    }
+
+    fn open_switch_picker(&mut self) {
+        match self.selected() {
+            Some(i) => {
+                let name = self.sessions[i].name.clone();
+                self.open_picker(PickPurpose::Switch(name));
+            }
+            None => self.status_message = "Select one of your orchestra sessions to switch".into(),
+        }
+    }
+
+    /// Everything a session can run on: Claude Code and Codex (their own
+    /// default model, plus Claude's model aliases) and every model pi knows.
+    fn pick_options(&mut self) -> Vec<PickOption> {
+        let t = |backend, model: Option<&str>| switch::Target { backend, model: model.map(str::to_string) };
+        let mut v = vec![
+            PickOption { name: "Claude Code".into(), desc: "its default model".into(), target: t(Backend::Claude, None) },
+        ];
+        for (alias, desc) in [("opus", "Anthropic's most capable everyday model"), ("sonnet", "faster, cheaper"), ("haiku", "fastest")] {
+            v.push(PickOption { name: format!("Claude Code · {alias}"), desc: desc.into(), target: t(Backend::Claude, Some(alias)) });
+        }
+        v.push(PickOption { name: "Codex".into(), desc: "its default model".into(), target: t(Backend::Codex, None) });
+        if self.pi_models.is_none() {
+            // Still loading: wait for the background load rather than
+            // starting a second one.
+            self.pi_models = self.pi_models_rx.take().and_then(|rx| rx.recv().ok());
+        }
+        let models = self.pi_models.get_or_insert_with(config::pi_models_table).clone();
+        for (provider, model, ctx) in models {
+            v.push(PickOption {
+                name: format!("pi · {model}"),
+                desc: format!("{provider} · {ctx} context"),
+                target: t(Backend::Pi, Some(&format!("{provider}/{model}"))),
+            });
+        }
+        if !v.iter().any(|o| o.target.backend == Backend::Pi) {
+            v.push(PickOption { name: "pi".into(), desc: "its default model (add providers in ~/.pi/agent/models.json)".into(), target: t(Backend::Pi, None) });
+        }
+        v
+    }
+
+    fn open_picker(&mut self, purpose: PickPurpose) {
+        let options = self.pick_options();
+        let current = self.picker_current(&purpose, &options);
+        self.overlay = Some(Overlay::Picker(Picker { purpose, options, selected: current.unwrap_or(0), filter: String::new() }));
+    }
+
+    fn picker_current(&self, purpose: &PickPurpose, options: &[PickOption]) -> Option<usize> {
+        let (b, m) = match purpose {
+            PickPurpose::Switch(name) => {
+                let s = self.sessions.iter().find(|s| &s.name == name)?;
+                (s.backend, s.model.clone())
+            }
+            PickPurpose::Default => (self.config.default_backend, self.config.model_for(self.config.default_backend)),
+        };
+        options.iter().position(|o| o.target.backend == b && o.target.model == m)
+    }
+
+    fn apply_pick(&mut self, picker: Picker) {
+        let visible = picker.visible();
+        let Some(opt) = visible.get(picker.selected).map(|o| (*o).clone()) else {
+            return;
+        };
+        match picker.purpose {
+            PickPurpose::Switch(name) => {
+                let Some(idx) = self.sessions.iter().position(|s| s.name == name) else { return };
+                self.status_message = self.switch_session(idx, &opt.target);
+            }
+            PickPurpose::Default => {
+                self.config.default_backend = opt.target.backend;
+                self.config.set_model(opt.target.backend, opt.target.model.clone());
+                self.config.save();
+                self.status_message = format!("New sessions will use {}", opt.target.label());
             }
         }
     }
@@ -405,15 +645,23 @@ impl App {
             format!("{ok_msg} — {}", warnings.join("; "))
         };
         self.list_state.select(Some(self.sessions.len() - 1));
+        self.select_session(self.sessions.len() - 1);
+        self.activity_scanned = None;
         // Refresh the tree so the new session appears.
         self.reload_tree();
     }
 
     // --- Import View ---
 
+    /// `i` / `/import`: jump to the first Claude Code / Codex session.
     fn open_import(&mut self) {
-        self.mode = ViewMode::Import;
         self.rescan_import();
+        match self.rows().iter().position(|r| matches!(r, RowRef::External(_))) {
+            Some(p) => self.sel = p,
+            None => {
+                self.status_message = "No Claude Code or Codex sessions here — press a to show all directories".into()
+            }
+        }
     }
 
     fn rescan_import(&mut self) {
@@ -423,16 +671,14 @@ impl App {
             Some(self.repo.as_ref().map(|r| r.root.clone()).unwrap_or_else(|| self.launch_dir.clone()))
         };
         self.import.items = import::scan(under.as_deref());
-        self.import.list_state.select(if self.import.items.is_empty() { None } else { Some(0) });
+        self.import.scanned = Some(Instant::now());
     }
 
-    fn import_move(&mut self, dir: i32) {
-        let n = self.import.items.len();
-        if n == 0 {
-            return;
+    fn selected_external(&self) -> Option<ExternalSession> {
+        match self.selected_row() {
+            Some(RowRef::External(i)) => self.import.items.get(i).cloned(),
+            _ => None,
         }
-        let cur = self.import.list_state.selected().unwrap_or(0) as i32;
-        self.import.list_state.select(Some((cur + dir).rem_euclid(n as i32) as usize));
     }
 
     /// The orchestra session already attached to an external session.
@@ -456,7 +702,7 @@ impl App {
     /// Enter in Import View: resume with the session's own CLI, in its
     /// original directory. Attaches to it if it's already running.
     fn import_resume(&mut self) {
-        let Some(ext) = self.import.list_state.selected().and_then(|i| self.import.items.get(i)).cloned() else {
+        let Some(ext) = self.selected_external() else {
             return;
         };
         if let Some(existing) = self.managing(&ext) {
@@ -480,7 +726,7 @@ impl App {
     /// `p` in Import View: convert the transcript into a pi session in a
     /// fresh worktree (or its original directory outside a repo).
     fn import_fork(&mut self) {
-        let Some(ext) = self.import.list_state.selected().and_then(|i| self.import.items.get(i)).cloned() else {
+        let Some(ext) = self.selected_external() else {
             return;
         };
         let name = format!("pi-{}", Self::imported_name(&ext));
@@ -965,6 +1211,41 @@ fn synthesize_tree_from_sessions(sessions: &[Session]) -> Tree {
     }
 }
 
+/// Whether the agent in a tmux session is mid-turn: every agent shows an
+/// interrupt hint while working ("esc to interrupt", pi's "Working...").
+fn pane_working(name: &str) -> bool {
+    let out = Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", name, "-S", "-12"])
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Ok(out) = out else { return false };
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.contains("esc to interrupt") || text.contains("Working...") || text.contains("to interrupt)")
+}
+
+/// "~/x" for paths under $HOME.
+fn tilde(p: &std::path::Path) -> String {
+    let home = paths::home();
+    match p.strip_prefix(&home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
+/// Slash commands for the completion list above the prompt.
+const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/switch", "move the selected session to another agent or model"),
+    ("/model", "pick the agent and model for new sessions"),
+    ("/claude", "<prompt> — start a Claude Code session"),
+    ("/codex", "<prompt> — start a Codex session"),
+    ("/pi", "<prompt> — start a pi session"),
+    ("/backend", "<pi|claude|codex> — default agent for new sessions"),
+    ("/import", "jump to your Claude Code and Codex sessions"),
+    ("/rename", "<name> — rename the selected session"),
+    ("/agent", "<name> — spawn a sub-agent"),
+];
+
 /// A pi model pattern → its exact `provider/id` (must match one model).
 fn resolve_pi_model(pattern: &str) -> Result<String, String> {
     match config::pi_models_matching(pattern) {
@@ -1078,6 +1359,7 @@ fn main() -> anyhow::Result<()> {
         for sess in &mut app.sessions {
             sess.refresh_state();
         }
+        app.refresh_activity();
         // Refresh the tree every poll cycle. Cheap: a few small JSON files,
         // or the in-memory synthesis. Keeps the tree live as the collector
         // writes new state.
@@ -1119,27 +1401,7 @@ fn handle_key(app: &mut App, key: event::KeyEvent) -> bool {
     match app.mode {
         ViewMode::Tree => handle_tree_key(app, key),
         ViewMode::Agent => handle_agent_key(app, key),
-        ViewMode::Import => handle_import_key(app, key),
     }
-}
-
-fn handle_import_key(app: &mut App, key: event::KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
-        KeyCode::Char('q') => return true,
-        KeyCode::Esc | KeyCode::Tab | KeyCode::Left => app.mode = ViewMode::Agent,
-        KeyCode::Up => app.import_move(-1),
-        KeyCode::Down => app.import_move(1),
-        KeyCode::Enter | KeyCode::Right => app.import_resume(),
-        KeyCode::Char('p') => app.import_fork(),
-        KeyCode::Char('a') => {
-            app.import.all_repos = !app.import.all_repos;
-            app.rescan_import();
-        }
-        KeyCode::Char('r') => app.rescan_import(),
-        _ => {}
-    }
-    false
 }
 
 fn handle_rename_key(app: &mut App, key: event::KeyEvent) -> bool {
@@ -1263,10 +1525,103 @@ fn handle_tree_key(app: &mut App, key: event::KeyEvent) -> bool {
     false
 }
 
+/// Keys while the picker or shortcut list is open. Returns true if the
+/// key was consumed.
+fn handle_overlay_key(app: &mut App, key: event::KeyEvent) -> bool {
+    let Some(overlay) = app.overlay.take() else { return false };
+    let Overlay::Picker(mut p) = overlay else {
+        // Shortcut list: any key closes it.
+        return true;
+    };
+    let n = p.visible().len();
+    match key.code {
+        KeyCode::Esc => return true,
+        KeyCode::Enter => {
+            app.apply_pick(p);
+            return true;
+        }
+        KeyCode::Up if n > 0 => p.selected = (p.selected + n - 1) % n,
+        KeyCode::Down if n > 0 => p.selected = (p.selected + 1) % n,
+        KeyCode::Backspace => {
+            p.filter.pop();
+            p.selected = 0;
+        }
+        // Number keys pick directly, like Claude Code's /model.
+        KeyCode::Char(c @ '1'..='9') if p.filter.is_empty() && (c as usize - '0' as usize) <= n => {
+            p.selected = c as usize - '1' as usize;
+            app.apply_pick(p);
+            return true;
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+        KeyCode::Char(c) => {
+            p.filter.push(c);
+            p.selected = 0;
+        }
+        _ => {}
+    }
+    app.overlay = Some(Overlay::Picker(p));
+    true
+}
+
+fn open_selected(app: &mut App) {
+    match app.selected_row() {
+        Some(RowRef::Session(idx)) => {
+            if app.sessions[idx].state == SessionState::Initializing {
+                app.status_message = format!("{} is still starting…", app.sessions[idx].name);
+            } else {
+                let name = app.sessions[idx].name.clone();
+                attach_to_session(&name, &mut app.status_message);
+                app.needs_clear = true;
+                app.activity_scanned = None;
+            }
+        }
+        Some(RowRef::External(_)) => app.import_resume(),
+        None => {}
+    }
+}
+
 fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
+    if app.agent_view_scope.is_none() && handle_overlay_key(app, key) {
+        return false;
+    }
     // Single-letter commands only apply to an empty input; otherwise they
     // are text (a prompt containing "q" must not quit).
     let empty = app.input.is_empty();
+    if app.agent_view_scope.is_none() && empty {
+        match key.code {
+            KeyCode::Char('?') => {
+                app.overlay = Some(Overlay::Help);
+                return false;
+            }
+            KeyCode::Char('s') => {
+                app.open_switch_picker();
+                return false;
+            }
+            KeyCode::Char('p') if matches!(app.selected_row(), Some(RowRef::External(_))) => {
+                app.import_fork();
+                return false;
+            }
+            KeyCode::Char('a') => {
+                app.import.all_repos = !app.import.all_repos;
+                app.rescan_import();
+                app.status_message = if app.import.all_repos {
+                    "Showing Claude Code / Codex sessions from all directories".into()
+                } else {
+                    "Showing Claude Code / Codex sessions in this repo".into()
+                };
+                return false;
+            }
+            _ => {}
+        }
+    }
+    // Tab completes a slash command while typing one.
+    if key.code == KeyCode::Tab && app.input.starts_with('/') && !app.input.contains(' ') {
+        if let Some((cmd, _)) = SLASH_COMMANDS.iter().find(|(c, _)| c.starts_with(app.input.as_str())) {
+            app.input = format!("{cmd} ");
+            app.cursor_pos = app.input.chars().count();
+        }
+        return false;
+    }
     // Any key other than `x` cancels a pending delete.
     let is_delete_key = empty && key.code == KeyCode::Char('x');
     if !is_delete_key {
@@ -1283,21 +1638,12 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
             app.cursor_pos = 0;
             app.input_mode = InputMode::Dispatch;
         }
-        KeyCode::Char('x') if empty => app.handle_delete_key_agent(),
+        KeyCode::Char('x') if empty && app.selected().is_some() => app.handle_delete_key_agent(),
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
         KeyCode::Enter => {
             if app.input.trim().is_empty() {
-                if let Some(idx) = app.selected() {
-                    if app.sessions[idx].state == SessionState::Initializing {
-                        app.status_message =
-                            format!("{} is still initializing...", app.sessions[idx].name);
-                    } else {
-                        let name = app.sessions[idx].name.clone();
-                        attach_to_session(&name, &mut app.status_message);
-                        app.needs_clear = true;
-                    }
-                }
+                open_selected(app);
             } else {
                 app.dispatch_new();
             }
@@ -1311,16 +1657,7 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
             if app.cursor_pos < app.input.chars().count() {
                 app.cursor_pos += 1;
             } else if app.input.trim().is_empty() {
-                if let Some(idx) = app.selected() {
-                    if app.sessions[idx].state == SessionState::Initializing {
-                        app.status_message =
-                            format!("{} is still initializing...", app.sessions[idx].name);
-                    } else {
-                        let name = app.sessions[idx].name.clone();
-                        attach_to_session(&name, &mut app.status_message);
-                        app.needs_clear = true;
-                    }
-                }
+                open_selected(app);
             }
         }
         KeyCode::Backspace => {
@@ -1413,7 +1750,6 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     match app.mode {
         ViewMode::Tree => ui_tree(f, app, area),
         ViewMode::Agent => ui_agent(f, app, area),
-        ViewMode::Import => ui_import(f, app, area),
     }
 }
 
@@ -1428,65 +1764,6 @@ fn ago(ts: u64) -> String {
     }
 }
 
-fn ui_import(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    let list_h = area.height.saturating_sub(3);
-    let list_area = Rect::new(area.x, area.y, area.width, list_h);
-    let footer_area = Rect::new(area.x, area.y + list_h, area.width, 3);
-    let scope = if app.import.all_repos {
-        "all directories".to_string()
-    } else {
-        app.repo
-            .as_ref()
-            .map(|r| r.root.display().to_string())
-            .unwrap_or_else(|| app.launch_dir.display().to_string())
-    };
-    let title = format!(" Import: Claude Code + Codex sessions in {scope} ({}) ", app.import.items.len());
-    // Show cwd relative to the scope root: worktree sessions read as
-    // ".claude/worktrees/foo" instead of a long absolute path.
-    let root = app.repo.as_ref().map(|r| r.root.clone());
-    let items: Vec<ListItem> = if app.import.items.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
-            "  No sessions found here. Press a to show sessions from all directories.",
-            Style::default().fg(Color::DarkGray),
-        )))]
-    } else {
-        app.import
-            .items
-            .iter()
-            .map(|e| {
-                let (tag, color) = match e.backend {
-                    Backend::Claude => ("cc ", Color::Magenta),
-                    _ => ("cx ", Color::Cyan),
-                };
-                let managed = app.managing(e).is_some();
-                let cwd = match &root {
-                    Some(r) if !app.import.all_repos => std::path::Path::new(&e.cwd)
-                        .strip_prefix(r)
-                        .map(|p| if p.as_os_str().is_empty() { ".".to_string() } else { p.display().to_string() })
-                        .unwrap_or_else(|_| e.cwd.clone()),
-                    _ => e.cwd.clone(),
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(tag, Style::default().fg(color)),
-                    Span::styled(format!("{:>4} ", ago(e.modified)), Style::default().fg(Color::DarkGray)),
-                    Span::styled(if managed { "● " } else { "  " }, Style::default().fg(Color::Yellow)),
-                    Span::styled(format!("{:<50}", import::one_line(&e.title, 49)), Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" "),
-                    Span::styled(
-                        format!("{cwd}{}", e.git_branch.as_ref().map(|b| format!(" @{b}")).unwrap_or_default()),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]))
-            })
-            .collect()
-    };
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    f.render_stateful_widget(list, list_area, &mut app.import.list_state);
-    render_footer(f, app, footer_area);
-}
-
 fn ui_tree(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let footer_h = 3u16.min(area.height);
     let footer_area = Rect::new(area.x, area.bottom().saturating_sub(footer_h), area.width, footer_h);
@@ -1497,7 +1774,168 @@ fn ui_tree(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     render_footer(f, app, footer_area);
 }
 
+/// Build what the main list shows this frame.
+fn view_model(app: &App) -> agent_view::ViewModel {
+    use agent_view::{Group, Row, Status};
+    let working = |s: &Session| app.activity.get(&s.name).is_some_and(|a| a.working);
+    let session_rows: Vec<Row> = app
+        .sessions
+        .iter()
+        .map(|s| {
+            let act = app.activity.get(&s.name);
+            let status = if s.state == SessionState::Initializing {
+                Status::Starting
+            } else if working(s) {
+                Status::Working
+            } else {
+                Status::Ready
+            };
+            let agent = switch::Target { backend: s.backend, model: s.model.as_ref().map(|m| m.rsplit('/').next().unwrap_or(m).to_string()) };
+            Row {
+                status,
+                name: s.name.clone(),
+                label: None,
+                summary: act.and_then(|a| a.summary.clone()).unwrap_or_else(|| s.prompt.clone()),
+                meta: agent.label(),
+                age: ago(act.and_then(|a| a.last_active).unwrap_or(s.created_at)),
+            }
+        })
+        .collect();
+    let root = app.repo.as_ref().map(|r| r.root.clone());
+    let ext_rows = |backend: Backend| -> Vec<Row> {
+        app.rows()
+            .into_iter()
+            .filter_map(|r| match r {
+                RowRef::External(i) if app.import.items[i].backend == backend => Some(&app.import.items[i]),
+                _ => None,
+            })
+            .map(|e| {
+                // Worktree sessions: just the worktree's name.
+                let short = |c: &str| -> Option<String> {
+                    let (_, rest) = c.split_once("/.claude/worktrees/").or_else(|| c.split_once("/.orchestra/worktrees/"))?;
+                    Some(format!("⎇ {}", rest.split('/').next().unwrap_or(rest)))
+                };
+                let dir = if let Some(wt) = short(&e.cwd) { wt } else { match &root {
+                    Some(r) if !app.import.all_repos => std::path::Path::new(&e.cwd)
+                        .strip_prefix(r)
+                        .map(|p| if p.as_os_str().is_empty() { ".".to_string() } else { p.display().to_string() })
+                        .unwrap_or_else(|_| tilde(std::path::Path::new(&e.cwd))),
+                    _ => tilde(std::path::Path::new(&e.cwd)),
+                } };
+                Row {
+                    status: Status::Elsewhere,
+                    name: e.title.clone(),
+                    label: None,
+                    summary: app.summaries.get(&e.path).and_then(|(_, s)| s.clone()).unwrap_or_default(),
+                    meta: dir,
+                    age: ago(e.modified),
+                }
+            })
+            .collect()
+    };
+    let groups = vec![
+        Group { title: "Sessions".into(), rows: session_rows },
+        Group { title: "Claude Code · not in orchestra — enter adopts, p forks into pi".into(), rows: ext_rows(Backend::Claude) },
+        Group { title: "Codex · not in orchestra — enter adopts, p forks into pi".into(), rows: ext_rows(Backend::Codex) },
+    ];
+    let n_working = app.sessions.iter().filter(|s| working(s)).count();
+    let n_ready = app.sessions.len() - n_working;
+    let default = switch::Target { backend: app.config.default_backend, model: app.config.model_for(app.config.default_backend) };
+    let (title, place) = match &app.repo {
+        Some(r) => (tilde(&r.root), format!("new sessions get a worktree off {}", r.base_ref)),
+        None => (tilde(&app.launch_dir), "not a git repo — new sessions run here without a worktree".into()),
+    };
+    let overlay = match &app.overlay {
+        None => None,
+        Some(Overlay::Help) => Some(agent_view::Overlay::Help(
+            [
+                ("enter", "open / adopt"), ("s", "switch agent or model"),
+                ("p", "fork into pi"), ("x x", "delete session"),
+                ("a", "all directories"), ("/model", "default for new sessions"),
+                ("← (in session)", "back to this list"), ("tab", "complete / tree view"),
+                ("q", "quit"), ("?", "close"),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        )),
+        Some(Overlay::Picker(p)) => {
+            let vis = p.visible();
+            let current = app.picker_current(&p.purpose, &vis.iter().map(|o| (*o).clone()).collect::<Vec<_>>());
+            let (title, subtitle) = match &p.purpose {
+                PickPurpose::Switch(name) => (
+                    format!("Switch {name}"),
+                    "Moves this conversation to another agent or model. History and tool calls carry over.".to_string(),
+                ),
+                PickPurpose::Default => (
+                    "Select agent and model".to_string(),
+                    "Used for new sessions. Change a running session with s or /switch.".to_string(),
+                ),
+            };
+            Some(agent_view::Overlay::Picker {
+                title,
+                subtitle,
+                options: vis.iter().map(|o| (o.name.clone(), o.desc.clone())).collect(),
+                current,
+                selected: p.selected,
+                filter: p.filter.clone(),
+            })
+        }
+    };
+    let footer_is_status = !app.status_message.is_empty();
+    let footer = if footer_is_status {
+        app.status_message.clone()
+    } else if matches!(app.overlay, Some(Overlay::Picker(_))) {
+        "enter to select · 1–9 to pick · type to filter · esc to cancel".into()
+    } else {
+        format!("⏵ {} · / for commands · ? for shortcuts", default.label())
+    };
+    let suggestions = if app.input.starts_with('/') && !app.input.contains(' ') {
+        SLASH_COMMANDS
+            .iter()
+            .filter(|(c, _)| c.starts_with(app.input.as_str()))
+            .map(|(c, d)| (c.to_string(), d.to_string()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    agent_view::ViewModel {
+        title,
+        subtitle: format!("{n_working} working · {n_ready} ready · {place}"),
+        hint: "enter opens · ← inside a session comes back here · s switches agent/model · ? for shortcuts".into(),
+        groups,
+        selected: Some(app.sel.min(app.rows().len().saturating_sub(1))).filter(|_| !app.rows().is_empty()),
+        input: app.input.clone(),
+        cursor: app.cursor_pos,
+        placeholder: "describe a task for a new session".into(),
+        footer,
+        footer_is_status,
+        overlay,
+        empty_text: "No sessions yet — describe a task below to start one".into(),
+        suggestions,
+    }
+}
+
 fn ui_agent(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    if app.agent_view_scope.is_none() {
+        // Fill summaries for visible external rows (cached by mtime).
+        let ext: Vec<(Backend, PathBuf)> = app
+            .rows()
+            .into_iter()
+            .filter_map(|r| match r {
+                RowRef::External(i) => Some((app.import.items[i].backend, app.import.items[i].path.clone())),
+                _ => None,
+            })
+            .take(area.height as usize)
+            .collect();
+        for (b, p) in ext {
+            app.summary_for(b, &p);
+        }
+        let vm = view_model(app);
+        let (cx, cy) = agent_view::render(f.buffer_mut(), area, &vm);
+        f.set_cursor_position((cx, cy));
+        return;
+    }
     let scope = app
         .agent_view_scope
         .as_ref()
@@ -1592,10 +2030,6 @@ fn render_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
         (ViewMode::Tree, InputMode::Dispatch) => (
             " Tree View — ←→↑↓ nav, Enter=enter, d=detail, n=rename, r=reload, x=delete, Tab=Agent ".into(),
             "Tree View".into(),
-        ),
-        (ViewMode::Import, _) => (
-            " Enter=resume, p=fork into pi, a=this repo/all, r=rescan, Esc=back ".into(),
-            "● = already open in orchestra (Enter attaches)".into(),
         ),
         (ViewMode::Agent, _) => {
             let backend = app.backend_label(app.config.default_backend);

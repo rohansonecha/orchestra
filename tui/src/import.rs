@@ -196,6 +196,18 @@ fn read_claude(path: &Path) -> Option<ExternalSession> {
     }
     // No real user turn means nothing worth resuming.
     let first_prompt = first_prompt?;
+    // Sessions that entered a worktree are moved into its project folder
+    // and record `relocated` entries. Resume from the directory the file
+    // is filed under now — the one whose encoded name is the folder name.
+    let folder = path.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string());
+    let encode = |c: &str| c.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' }).collect::<String>();
+    if let (Some(folder), Some(first)) = (&folder, &cwd) {
+        if &encode(first) != folder {
+            if let Some(moved) = relocated_cwds(path).into_iter().rev().find(|c| &encode(c) == folder) {
+                cwd = Some(moved);
+            }
+        }
+    }
     let (mut custom, mut ai, mut last_prompt) = (None, None, None);
     for e in tail_lines(path) {
         match e.get("type").and_then(Value::as_str) {
@@ -215,6 +227,19 @@ fn read_claude(path: &Path) -> Option<ExternalSession> {
         modified: mtime(path),
         path: path.to_path_buf(),
     })
+}
+
+/// `relocatedCwd` values in a Claude transcript, in order. Only lines
+/// mentioning it are parsed, so large transcripts stay cheap.
+fn relocated_cwds(path: &Path) -> Vec<String> {
+    let Ok(f) = File::open(path) else { return Vec::new() };
+    BufReader::new(f)
+        .lines()
+        .map_while(Result::ok)
+        .filter(|l| l.contains("\"relocatedCwd\""))
+        .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
+        .filter_map(|v| v.get("relocatedCwd").and_then(Value::as_str).map(str::to_string))
+        .collect()
 }
 
 pub fn scan_codex(codex_home: &Path) -> Vec<ExternalSession> {
@@ -371,6 +396,21 @@ mod tests {
     }
 
     #[test]
+    fn claude_relocated_into_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Started in /home/u, entered /r/.claude/worktrees/w: Claude moved the
+        // file into that worktree's project folder.
+        write(
+            &tmp.path().join("-r--claude-worktrees-w/ddd.jsonl"),
+            &[
+                serde_json::json!({"type":"user","cwd":"/home/u","message":{"content":"go"}}),
+                serde_json::json!({"type":"relocated","relocatedCwd":"/r/.claude/worktrees/w"}),
+            ],
+        );
+        assert_eq!(scan_claude(tmp.path())[0].cwd, "/r/.claude/worktrees/w");
+    }
+
+    #[test]
     fn claude_falls_back_to_first_prompt() {
         let tmp = tempfile::tempdir().unwrap();
         write(
@@ -447,3 +487,4 @@ mod tests {
         assert_eq!(scan_claude(tmp.path())[0].title, "Late title");
     }
 }
+

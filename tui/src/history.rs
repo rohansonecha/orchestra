@@ -611,6 +611,53 @@ pub fn read_pi(path: &Path, from: usize) -> std::io::Result<Vec<Msg>> {
     Ok(msgs)
 }
 
+/// The latest assistant text in a transcript, reading only its tail, for
+/// the one-line summary in the session list.
+pub fn last_assistant_text(backend: Backend, path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(256 * 1024);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    for l in lines.iter().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        let found = match backend {
+            Backend::Claude => (v.get("type").and_then(Value::as_str) == Some("assistant")
+                && v.get("isSidechain").and_then(Value::as_bool) != Some(true))
+            .then(|| {
+                v.pointer("/message/content")?.as_array()?.iter().rev().find_map(|b| {
+                    (b.get("type").and_then(Value::as_str) == Some("text")).then(|| s(b, "text")).flatten()
+                })
+            })
+            .flatten(),
+            Backend::Codex => (v.pointer("/payload/type").and_then(Value::as_str) == Some("message")
+                && v.pointer("/payload/role").and_then(Value::as_str) == Some("assistant"))
+            .then(|| codex_content_text(&v["payload"]))
+            .filter(|t| !t.trim().is_empty()),
+            Backend::Pi => (v.pointer("/message/role").and_then(Value::as_str) == Some("assistant"))
+                .then(|| {
+                    v.pointer("/message/content")?.as_array()?.iter().rev().find_map(|b| {
+                        (b.get("type").and_then(Value::as_str) == Some("text")).then(|| s(b, "text")).flatten()
+                    })
+                })
+                .flatten(),
+        };
+        if let Some(t) = found.filter(|t| !t.trim().is_empty()) {
+            // First non-empty line, without markdown emphasis noise.
+            let line = t.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("```")).unwrap_or("");
+            return Some(line.trim_start_matches(['#', '*', '-', ' ']).to_string());
+        }
+    }
+    None
+}
+
 pub fn read(backend: Backend, path: &Path, from: usize) -> std::io::Result<Vec<Msg>> {
     match backend {
         Backend::Claude => read_claude(path, from),
@@ -1102,6 +1149,24 @@ mod tests {
         assert!(lines[2]["payload"]["content"][0]["text"].as_str().unwrap().contains("[called shell] ls"));
         let back = read_codex(&file, 0).unwrap();
         assert_eq!(back.len(), 3);
+    }
+
+    #[test]
+    fn last_assistant_text_per_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cc = tmp.path().join("cc.jsonl");
+        write_jsonl(&cc, &[
+            json!({"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}),
+            json!({"type":"assistant","message":{"content":[{"type":"text","text":"## Fixed the bug\nmore"}]}}),
+            json!({"type":"user","message":{"content":"thanks"}}),
+        ]);
+        assert_eq!(last_assistant_text(Backend::Claude, &cc).as_deref(), Some("Fixed the bug"));
+        let pi = tmp.path().join("pi.jsonl");
+        write_jsonl(&pi, &[json!({"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"pi says"}]}})]);
+        assert_eq!(last_assistant_text(Backend::Pi, &pi).as_deref(), Some("pi says"));
+        let cx = tmp.path().join("cx.jsonl");
+        write_jsonl(&cx, &[json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"codex says"}]}})]);
+        assert_eq!(last_assistant_text(Backend::Codex, &cx).as_deref(), Some("codex says"));
     }
 
     #[test]

@@ -60,6 +60,26 @@ pub fn pi_models_matching(pattern: &str) -> Result<Vec<String>, String> {
     Ok(parse_list_models(&text))
 }
 
+/// Every model pi knows: (provider, model id, context window as printed).
+pub fn pi_models_table() -> Vec<(String, String, String)> {
+    let Ok(out) = std::process::Command::new("pi")
+        .args(["--offline", "--list-models"])
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    text.lines()
+        .skip_while(|l| !l.trim_start().starts_with("provider"))
+        .skip(1)
+        .filter_map(|l| {
+            let mut c = l.split_whitespace();
+            Some((c.next()?.to_string(), c.next()?.to_string(), c.next().unwrap_or("").to_string()))
+        })
+        .collect()
+}
+
 /// `pi --list-models` prints a table: provider, model, ... columns.
 fn parse_list_models(text: &str) -> Vec<String> {
     text.lines()

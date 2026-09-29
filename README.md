@@ -41,16 +41,22 @@ any model from pi's built-in providers or from a custom provider in
 are saved in `~/.orchestra/config.json`.
 
 ### Navigate between sessions
-orchestra opens in Agent View, the session list. `Tab` switches to Tree View
-and back.
+orchestra opens on its session list, styled after Claude Code's agents view:
+your orchestra sessions, with what each is doing and its latest reply, then
+your Claude Code and Codex sessions for this repo that are not in orchestra
+yet. `Tab` switches to Tree View and back.
 
-- `↑` / `↓` — move between sessions in the list
-- `→` or `Enter` (on empty input) — attach to the selected session (full-screen
-  pi interactive mode)
-- `←` (on empty input) — detach back to the session list
-- `i` (on empty input) — open the session importer
-- `x` twice (on empty input) — delete the selected session
-- `q` (on empty input) or `Ctrl+C` — quit
+- `↑` / `↓` — move through the list
+- `Enter` — open the selected session, or adopt a Claude Code / Codex one
+- `←` inside a session (on an empty prompt) — come back to the list
+- `s` — switch the selected session to another agent or model (a picker, like
+  Claude Code's `/model`; number keys pick directly, typing filters)
+- `p` — fork a Claude Code / Codex session into pi
+- `a` — show Claude Code / Codex sessions from all directories
+- `x` twice — delete the selected session
+- `/` — commands, with completions above the prompt (`Tab` completes)
+- `?` — shortcuts
+- `q` (on an empty prompt) or `Ctrl+C` — quit
 
 ### Work in parallel
 Worktrees follow the same layout Claude Code uses for `.claude/worktrees/`:
@@ -79,7 +85,7 @@ Worktrees follow the same layout Claude Code uses for `.claude/worktrees/`:
   the base branch.
 
 ### Import Claude Code and Codex sessions
-Press `i` in Agent View (or type `/import`) to list your Claude Code sessions
+The list shows your Claude Code sessions
 (`~/.claude/projects/`) and Codex sessions (`~/.codex/sessions/`) whose
 directory is inside the current repo, including their worktrees. Press `a` to
 show sessions from every directory.
