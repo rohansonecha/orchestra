@@ -596,16 +596,15 @@ pub fn load_sessions() -> Vec<Session> {
     sessions
 }
 
+/// On quit: forget sessions this TUI saw end. Live sessions are not
+/// rewritten — every change is saved when it happens, and rewriting here
+/// would let a second orchestra window overwrite newer state (a /switch
+/// made in the other window) with its stale copy.
 pub fn save_sessions(sessions: &[Session]) {
     for sess in sessions {
-        // Don't re-save sessions whose tmux is dead — that recreates stale
-        // state files and causes the "ghost sessions" problem where the
-        // TUI shows sessions that can't be attached to.
-        if sess.state == SessionState::Completed || sess.state == SessionState::Failed {
+        if (sess.state == SessionState::Completed || sess.state == SessionState::Failed) && !tmux_alive(&sess.name) {
             remove_session_state(&sess.name);
-            continue;
         }
-        save_session(sess);
     }
 }
 
