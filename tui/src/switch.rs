@@ -110,8 +110,12 @@ fn codex_rollouts(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
 /// share a directory (everything started from ~), so "newest in this
 /// directory" would pick the wrong one.
 pub fn discover_codex_thread(cwd: &str, created_at: u64) -> Option<(String, PathBuf)> {
+    discover_codex_thread_in(&paths::codex_dir(), cwd, created_at)
+}
+
+fn discover_codex_thread_in(codex_home: &Path, cwd: &str, created_at: u64) -> Option<(String, PathBuf)> {
     let mut files = Vec::new();
-    codex_rollouts(&paths::codex_dir().join("sessions"), 4, &mut files);
+    codex_rollouts(&codex_home.join("sessions"), 4, &mut files);
     files
         .into_iter()
         .filter_map(|p| {
@@ -385,7 +389,6 @@ mod tests {
     #[test]
     fn codex_thread_is_first_after_creation_in_that_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("CODEX_HOME", tmp.path());
         let day = tmp.path().join("sessions/2026/09/29");
         std::fs::create_dir_all(&day).unwrap();
         let meta = |id: &str, cwd: &str, ts: &str, sub: bool| {
@@ -401,8 +404,7 @@ mod tests {
         meta("later", "/home/u", "2026-09-29T17:30:00Z", false); // another session in ~
         meta("sub", "/home/u", "2026-09-29T17:00:01Z", true); // a subagent thread
         meta("elsewhere", "/r", "2026-09-29T17:00:01Z", false);
-        let found = discover_codex_thread("/home/u", created).map(|(id, _)| id);
-        std::env::remove_var("CODEX_HOME");
+        let found = discover_codex_thread_in(tmp.path(), "/home/u", created).map(|(id, _)| id);
         assert_eq!(found.as_deref(), Some("mine"));
     }
 

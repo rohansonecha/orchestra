@@ -1786,6 +1786,11 @@ fn main() -> anyhow::Result<()> {
             "rename" => return rename_cli(),
             "claude-open" => return claude_open_cli(),
             "codex-open" => return codex_open_cli(),
+            "tmux-setup" => {
+                session::tmux_setup_now();
+                println!("orchestra tmux settings applied");
+                return Ok(());
+            }
             // Used by the copy-mode Left binding.
             "is-orchestra" => {
                 let name = std::env::args().nth(2).unwrap_or_default();

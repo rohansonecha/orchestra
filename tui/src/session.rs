@@ -361,6 +361,47 @@ pub fn launch_commands(sess: &Session, system_prompt: Option<&Path>) -> Launch {
     }
 }
 
+/// Scrolling puts the pane in tmux copy mode, where letters are copy-mode
+/// commands (`f` waits for a character to "jump forward" to, and looks
+/// frozen). Make every printable key, Space, Enter and Backspace leave copy
+/// mode and go to the agent instead, so typing after scrolling just types.
+/// Arrow and page keys still move in copy mode. Done once per tmux server,
+/// in a single tmux call.
+pub fn bind_typing_in_copy_mode() {
+    const MARK: &str = "@orchestra_typing_keys";
+    const VERSION: &str = "1";
+    let current = Command::new("tmux").args(["show-options", "-gqv", MARK]).output();
+    if current.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == VERSION) {
+        return;
+    }
+    let _ = Command::new("tmux").args(typing_bind_args(VERSION)).stdout(Stdio::null()).stderr(Stdio::null()).status();
+}
+
+/// Arguments for one tmux call that binds the typing keys in both copy-mode
+/// tables and records the marker. Commands are separated by ";" arguments;
+/// a literal semicolon is written "\\;".
+fn typing_bind_args(version: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut push = |cmd: Vec<String>| {
+        if !args.is_empty() {
+            args.push(";".into());
+        }
+        args.extend(cmd);
+    };
+    let s = |x: &str| x.to_string();
+    for table in ["copy-mode", "copy-mode-vi"] {
+        for c in (0x21u8..=0x7e).map(char::from) {
+            let lit = if c == ';' { s("\\;") } else { c.to_string() };
+            push(vec![s("bind-key"), s("-T"), s(table), lit.clone(), s("send-keys"), s("-X"), s("cancel"), s("\\;"), s("send-keys"), s("-l"), lit]);
+        }
+        for k in ["Space", "Enter", "BSpace"] {
+            push(vec![s("bind-key"), s("-T"), s(table), s(k), s("send-keys"), s("-X"), s("cancel"), s("\\;"), s("send-keys"), s(k)]);
+        }
+    }
+    push(vec![s("set-option"), s("-g"), s("@orchestra_typing_keys"), s(version)]);
+    args
+}
+
 /// A stable copy of this binary for commands tmux runs later (the Left
 /// key, `claude-open`, /loop): ~/.orchestra/bin/orchestra, replaced by an
 /// atomic rename, so rebuilding or upgrading orchestra never leaves tmux
@@ -574,18 +615,27 @@ bind-key -n C-c detach-client
         .stderr(Stdio::null())
         .status()?;
 
+    apply_tmux_setup(&left_check);
+    Ok(())
+}
+
+/// Server-wide tmux settings orchestra relies on: Left returns to the
+/// list, Ctrl+C detaches, mouse copy goes to the clipboard, typing after
+/// scrolling types, and Left leaves copy mode. Run at every spawn and by
+/// `orchestra tmux-setup` (to update a running tmux server in place).
+pub fn apply_tmux_setup(left_check: &str) {
     // Set keybindings after session creation as a fallback, in case
     // the tmux server was already running without ~/.tmux.conf.
-    Command::new("tmux")
-        .args(["bind-key", "-n", "Left", "if-shell", &left_check, "detach-client", "send-keys Left"])
+    let _ = Command::new("tmux")
+        .args(["bind-key", "-n", "Left", "if-shell", left_check, "detach-client", "send-keys Left"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()?;
-    Command::new("tmux")
+        .status();
+    let _ = Command::new("tmux")
         .args(["bind-key", "-n", "C-c", "detach-client"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()?;
+        .status();
     // Mouse selection copies to your clipboard (OSC 52; allowed by most
     // terminals, iTerm2 needs "Applications in terminal may access
     // clipboard"). On release: copy, clear the highlight (a kept one
@@ -599,6 +649,7 @@ bind-key -n C-c detach-client
             .stderr(Stdio::null())
             .status();
     }
+    bind_typing_in_copy_mode();
     // After scrolling (tmux copy mode), Left should still mean "back to
     // orchestra", not "move the copy-mode cursor".
     let is_orch = format!("{} is-orchestra '#{{session_name}}'", sq(&orchestra_bin()));
@@ -610,7 +661,13 @@ bind-key -n C-c detach-client
             .stderr(Stdio::null())
             .status();
     }
-    Ok(())
+}
+
+/// `orchestra tmux-setup`: apply the settings above to the running tmux
+/// server now (typing keys are re-bound even if already marked).
+pub fn tmux_setup_now() {
+    let _ = Command::new("tmux").args(["set-option", "-gu", "@orchestra_typing_keys"]).status();
+    apply_tmux_setup(&left_key_check());
 }
 
 pub fn load_sessions() -> Vec<Session> {
@@ -781,6 +838,16 @@ mod tests {
         assert!(!at_input_start("❯ abc", 5));
         assert!(!at_input_start("❯ abc", 3));
         assert!(!at_input_start("hello", 2));
+    }
+
+    #[test]
+    fn typing_keys_cover_printables_in_both_tables() {
+        let a = typing_bind_args("1");
+        let binds = a.iter().filter(|x| *x == "bind-key").count();
+        assert_eq!(binds, 2 * (94 + 3));
+        assert!(a.windows(4).any(|w| w == ["-T", "copy-mode", "f", "send-keys"]));
+        assert!(a.windows(4).any(|w| w == ["-T", "copy-mode-vi", "\\;", "send-keys"]));
+        assert_eq!(a.last().map(String::as_str), Some("1"));
     }
 
     #[test]
