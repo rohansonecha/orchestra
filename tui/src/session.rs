@@ -627,18 +627,32 @@ pub fn apply_tmux_setup(left_check: &str) {
         .status();
     // Mouse selection copies to your clipboard (OSC 52; allowed by most
     // terminals, iTerm2 needs "Applications in terminal may access
-    // clipboard"). On release: copy, clear the highlight (a kept one
-    // lingers while scrolling), stay at the scrolled position, and say so.
+    // clipboard"; browsers usually refuse it). On release: copy, clear the
+    // highlight (a kept one lingers while scrolling) and stay at the
+    // scrolled position. No "Copied" message: tmux cannot know whether the
+    // terminal accepted it.
     let _ = Command::new("tmux").args(["set-option", "-s", "set-clipboard", "on"]).status();
     for table in ["copy-mode", "copy-mode-vi"] {
         let _ = Command::new("tmux")
-            .args(["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe", "\\;",
-                   "display-message", "Copied to your clipboard"])
+            .args(["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
     }
     bind_typing_in_copy_mode();
+    // Quiet copy mode: tmux draws the selection and its position counter
+    // (top right) in mode-style, bright yellow by default. Use the theme's
+    // selection color instead (tmux 3.4 cannot hide the counter), and a
+    // muted style for tmux messages.
+    let light = crate::config::Config::load().light();
+    let (mode, msg) = if light {
+        ("bg=#b4d5ff,fg=default", "bg=default,fg=#666666")
+    } else {
+        ("bg=#264f78,fg=default", "bg=default,fg=#999999")
+    };
+    for (opt, val) in [("mode-style", mode), ("message-style", msg)] {
+        let _ = Command::new("tmux").args(["set-option", "-g", opt, val]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
     // Mouse clicks in orchestra sessions (tagged @orchestra): a click puts
     // you back at the agent's prompt — it leaves copy mode and is not
     // passed to the agent, so agents that track the mouse (Claude Code's
