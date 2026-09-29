@@ -2250,13 +2250,7 @@ fn attach_to_session(name: &str, status_message: &mut String) {
     // Re-apply the per-session look on every attach, so sessions started
     // by an older orchestra (before these were set at spawn) get it too:
     // no tmux status bar, mouse wheel scrolls the conversation.
-    for (opt, val) in [("status", "off"), ("mouse", "on")] {
-        let _ = Command::new("tmux")
-            .args(["set-option", "-t", name, opt, val])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
+    session::session_look(name);
     let status = Command::new("tmux")
         .arg("attach")
         .arg("-t")

@@ -598,22 +598,11 @@ bind-key -n C-c detach-client
         return Err(std::io::Error::other("tmux new-session failed"));
     }
 
-    // No tmux status bar: an attached session should look like the agent
-    // alone, as it does in Claude Code's own agents view. Scoped to this
-    // session so other tmux use keeps its status bar.
-    Command::new("tmux")
-        .args(["set-option", "-t", name, "status", "off"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    // Mouse wheel scrolls the conversation. Without this, tmux turns the
-    // wheel into Up/Down keys, which agents read as prompt-history
-    // navigation in their input box.
-    Command::new("tmux")
-        .args(["set-option", "-t", name, "mouse", "on"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+    // Like the agent alone: no tmux status bar (as in Claude Code's own
+    // agents view), mouse wheel scrolls the conversation (without mouse
+    // mode tmux turns the wheel into Up/Down, which agents read as prompt
+    // history), and tagged so orchestra's click rules apply.
+    session_look(name);
 
     apply_tmux_setup(&left_check);
     Ok(())
@@ -650,6 +639,26 @@ pub fn apply_tmux_setup(left_check: &str) {
             .status();
     }
     bind_typing_in_copy_mode();
+    // Mouse clicks in orchestra sessions (tagged @orchestra): a click puts
+    // you back at the agent's prompt — it leaves copy mode and is not
+    // passed to the agent, so agents that track the mouse (Claude Code's
+    // attach view, Codex) don't move their cursor onto output text. A drag
+    // always makes a tmux selection, for copying. The wheel is unchanged.
+    for (table, key, cmd) in [
+        ("root", "MouseDown1Pane", ["if-shell", "-F", "#{@orchestra}", "select-pane -t =", "select-pane -t = ; send-keys -M"]),
+        ("root", "MouseUp1Pane", ["if-shell", "-F", "#{@orchestra}", "select-pane -t =", "send-keys -M"]),
+        ("root", "MouseDrag1Pane", ["if-shell", "-F", "#{@orchestra}", "copy-mode -M",
+            "if-shell -F \"#{||:#{pane_in_mode},#{mouse_any_flag}}\" \"send-keys -M\" \"copy-mode -M\""]),
+        ("copy-mode", "MouseUp1Pane", ["if-shell", "-F", "#{@orchestra}", "send-keys -X cancel", "send-keys -X clear-selection"]),
+        ("copy-mode-vi", "MouseUp1Pane", ["if-shell", "-F", "#{@orchestra}", "send-keys -X cancel", "send-keys -X clear-selection"]),
+    ] {
+        let _ = Command::new("tmux")
+            .args(["bind-key", "-T", table, key])
+            .args(cmd)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     // After scrolling (tmux copy mode), Left should still mean "back to
     // orchestra", not "move the copy-mode cursor".
     let is_orch = format!("{} is-orchestra '#{{session_name}}'", sq(&orchestra_bin()));
@@ -664,10 +673,29 @@ pub fn apply_tmux_setup(left_check: &str) {
 }
 
 /// `orchestra tmux-setup`: apply the settings above to the running tmux
-/// server now (typing keys are re-bound even if already marked).
+/// server now (typing keys are re-bound even if already marked), and tag
+/// and style every running orchestra session.
 pub fn tmux_setup_now() {
     let _ = Command::new("tmux").args(["set-option", "-gu", "@orchestra_typing_keys"]).status();
     apply_tmux_setup(&left_key_check());
+    let out = Command::new("tmux").args(["list-sessions", "-F", "#{session_name}"]).output();
+    for name in out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default().lines() {
+        if paths::sessions_dir().join(name).join("state.json").exists() {
+            session_look(name);
+        }
+    }
+}
+
+/// Per-session tmux options for an orchestra session: tagged @orchestra
+/// (mouse rules above apply only to these), no status bar, mouse on.
+pub fn session_look(name: &str) {
+    for (opt, val) in [("@orchestra", "1"), ("status", "off"), ("mouse", "on")] {
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", name, opt, val])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 pub fn load_sessions() -> Vec<Session> {
