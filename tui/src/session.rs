@@ -99,6 +99,9 @@ pub struct Session {
     /// the first switch). See switch.rs.
     #[serde(default)]
     pub segments: Vec<Segment>,
+    /// Set while the session runs on a SkyPilot box (/teleport).
+    #[serde(default)]
+    pub remote: Option<crate::teleport::Remote>,
 }
 
 /// One stretch of a conversation in one agent's own transcript.
@@ -134,6 +137,7 @@ impl Session {
             branch: None,
             external_id: None,
             segments: Vec::new(),
+            remote: None,
         }
     }
 
@@ -256,6 +260,11 @@ pub struct Launch {
 }
 
 pub fn launch_commands(sess: &Session, system_prompt: Option<&Path>) -> Launch {
+    if let Some(remote) = &sess.remote {
+        // The agent runs on the box; this pane is an ssh view of it.
+        let attach = crate::teleport::pane_command(sess, remote, None);
+        return Launch { first: attach.clone(), restart: attach };
+    }
     let prompt_arg = if sess.prompt.trim().is_empty() || sess.origin != Origin::New {
         String::new()
     } else {
@@ -426,11 +435,20 @@ pub fn tmux_left_should_detach(session: &str, pane: &str, x: usize, y: usize) ->
 /// user can return to the orchestra TUI without killing the agent. Use
 /// Escape to interrupt agent operations.
 pub fn spawn(sess: &Session) -> std::io::Result<()> {
+    spawn_with(sess, None)
+}
+
+/// Like `spawn`, running `pre` in the pane first (a `sky launch`, or the
+/// copy back from a box); the agent starts only if it succeeds.
+pub fn spawn_with(sess: &Session, pre: Option<&str>) -> std::io::Result<()> {
     let system_prompt = match sess.backend {
         Backend::Pi | Backend::Claude => write_system_prompt(&sess.id),
         Backend::Codex => None,
     };
-    let launch = launch_commands(sess, system_prompt.as_deref());
+    let mut launch = launch_commands(sess, system_prompt.as_deref());
+    if let Some(pre) = pre {
+        launch.first = format!("{{ {pre}; }} && {}", launch.first);
+    }
     let name = &sess.name;
     let ready_marker = sq(&sess.ready_path().to_string_lossy());
     let env_file = sq(&paths::env_file().to_string_lossy());

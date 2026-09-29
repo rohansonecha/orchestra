@@ -74,6 +74,7 @@ mod rename;
 mod repo;
 mod session;
 mod switch;
+mod teleport;
 mod tree_layout;
 mod tree_store;
 mod tree_view;
@@ -161,6 +162,8 @@ enum Overlay {
     Text { title: String, subtitle: String, body: String },
     /// /bug draft waiting for Enter to file it.
     Bug { title: String, body: String },
+    /// /teleport plan waiting for Enter to launch it.
+    Teleport { session: String, plan: teleport::Plan },
 }
 
 /// A finished /btw or /recap, from the worker thread.
@@ -604,10 +607,66 @@ impl App {
                 self.overlay = Some(Overlay::Bug { title, body });
             }
             "teleport" => {
-                self.status_message = "/teleport is coming next".into();
+                let Some(i) = need(self) else { return };
+                if args.trim() == "back" {
+                    self.status_message = self.teleport_back(i);
+                    return;
+                }
+                if let Some(r) = &self.sessions[i].remote {
+                    self.status_message = format!("{} already runs on {} — /teleport back to bring it home", self.sessions[i].name, r.cluster);
+                    return;
+                }
+                match teleport::plan(&self.sessions[i], args) {
+                    Ok(plan) => self.overlay = Some(Overlay::Teleport { session: self.sessions[i].name.clone(), plan }),
+                    Err(e) => self.status_message = format!("/teleport: {e}"),
+                }
             }
             _ => {}
         }
+    }
+
+    /// Launch a confirmed /teleport plan: the pane runs `sky launch`, then
+    /// becomes an ssh view of the session's tmux on the box.
+    fn teleport_launch(&mut self, name: &str, plan: teleport::Plan) {
+        let Some(i) = self.sessions.iter().position(|s| s.name == name) else { return };
+        let sess = &mut self.sessions[i];
+        let _ = Command::new("tmux").args(["kill-session", "-t", name]).status();
+        let _ = std::fs::remove_file(paths::sessions_dir().join(format!("{name}.ready")));
+        sess.remote = Some(plan.remote.clone());
+        sess.state = SessionState::Initializing;
+        if let Err(e) = session::spawn_with(sess, Some(&plan.launch)) {
+            sess.remote = None;
+            self.status_message = format!("Teleport failed to start: {e}");
+            return;
+        }
+        session::save_session(sess);
+        self.status_message = format!(
+            "Launching {} on {} — open the session to watch; stop the box later with: sky down {}",
+            plan.cluster, plan.infra, plan.cluster
+        );
+    }
+
+    /// /teleport back: copy the transcript and changed files home, then
+    /// resume locally. The cluster is left running for you to stop.
+    fn teleport_back(&mut self, i: usize) -> String {
+        let Some(remote) = self.sessions[i].remote.clone() else {
+            return format!("{} runs locally already", self.sessions[i].name);
+        };
+        let sess = &mut self.sessions[i];
+        let local = switch::native_transcript(sess).unwrap_or_else(|| sess.pi_session_dir().join("teleported.jsonl"));
+        let cmds = teleport::back_commands(sess, &remote, &local).join(" && ");
+        let name = sess.name.clone();
+        let _ = Command::new("tmux").args(["kill-session", "-t", &name]).status();
+        let _ = std::fs::remove_file(paths::sessions_dir().join(format!("{name}.ready")));
+        sess.remote = None;
+        sess.origin = Origin::Resumed;
+        sess.state = SessionState::Initializing;
+        if let Err(e) = session::spawn_with(sess, Some(&cmds)) {
+            sess.remote = Some(remote);
+            return format!("Teleport back failed to start: {e}");
+        }
+        session::save_session(sess);
+        format!("Bringing {name} home from {} — the box is still up: sky down {}", remote.cluster, remote.cluster)
     }
 
     /// /branch: a new session with a copy of this one's conversation and
@@ -1497,7 +1556,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/background", "<prompt> — start a session without opening it"),
     ("/bug", "<what went wrong> — draft a GitHub issue for orchestra"),
     ("/theme", "<light|dark> — colors for orchestra and new pi sessions"),
-    ("/teleport", "move the selected session to a SkyPilot box"),
+    ("/teleport", "[infra] — move the selected session to a SkyPilot box; /teleport back"),
     ("/rename", "<name> — rename the selected session"),
     ("/agent", "<name> — spawn a sub-agent"),
 ];
@@ -1822,6 +1881,14 @@ fn handle_overlay_key(app: &mut App, key: event::KeyEvent) -> bool {
             }
             return true;
         }
+        Overlay::Teleport { session, plan } => {
+            match key.code {
+                KeyCode::Enter => app.teleport_launch(&session, plan),
+                KeyCode::Esc => app.status_message = "Teleport cancelled — nothing was launched".into(),
+                _ => app.overlay = Some(Overlay::Teleport { session, plan }),
+            }
+            return true;
+        }
         // Shortcut list and answers: any key closes them.
         _ => return true,
     };
@@ -2088,7 +2155,16 @@ fn view_model(app: &App) -> agent_view::ViewModel {
                 name: s.name.clone(),
                 label: None,
                 summary: act.and_then(|a| a.summary.clone()).unwrap_or_else(|| s.prompt.clone()),
-                meta: if act.is_some_and(|a| a.looping) { format!("↻ {}", agent.label()) } else { agent.label() },
+                meta: {
+                    let mut m = agent.label();
+                    if let Some(r) = &s.remote {
+                        m = format!("☁ {} · {m}", r.cluster);
+                    }
+                    if act.is_some_and(|a| a.looping) {
+                        m = format!("↻ {m}");
+                    }
+                    m
+                },
                 age: ago(act.and_then(|a| a.last_active).unwrap_or(s.created_at)),
             }
         })
@@ -2161,6 +2237,21 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             subtitle: format!("Title: {title}"),
             body: body.clone(),
         }),
+        Some(Overlay::Teleport { session, plan }) => Some(agent_view::Overlay::Text {
+            title: format!("Teleport {session} to {}", plan.infra),
+            subtitle: format!("API server {} · cluster {}", plan.endpoint, plan.cluster),
+            body: {
+                let mut b = String::from("This launches a SkyPilot cluster and resumes the session there. It sends:\n");
+                for l in &plan.sends {
+                    b.push_str(&format!("  • {l}\n"));
+                }
+                for w in &plan.warnings {
+                    b.push_str(&format!("\n⚠ {w}\n"));
+                }
+                b.push_str(&format!("\nThe cluster costs money until you stop it: sky down {}\nTask file: {}", plan.cluster, plan.yaml.display()));
+                b
+            },
+        }),
         Some(Overlay::Picker(p)) => {
             let vis = p.visible();
             let current = app.picker_current(&p.purpose, &vis.iter().map(|o| (*o).clone()).collect::<Vec<_>>());
@@ -2189,6 +2280,8 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         app.status_message.clone()
     } else if matches!(app.overlay, Some(Overlay::Picker(_))) {
         "enter to select · 1–9 to pick · type to filter · esc to cancel".into()
+    } else if matches!(app.overlay, Some(Overlay::Teleport { .. })) {
+        "enter to launch · esc to cancel".into()
     } else if matches!(app.overlay, Some(Overlay::Bug { .. })) {
         "enter to file this issue (public) · esc to cancel".into()
     } else if matches!(app.overlay, Some(Overlay::Text { .. })) {

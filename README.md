@@ -145,6 +145,23 @@ These work on the selected session, whatever agent it runs on:
 | `/bug <what went wrong>` | Drafts a GitHub issue for orchestra; Enter files it (public), Esc cancels |
 | `/theme light\|dark` | Colors for orchestra and new pi sessions |
 
+### Move a session to a SkyPilot box
+Sessions run locally. `/teleport [infra]` (or `SKY_INFRA` in
+`~/.orchestra/env`) moves the selected session to a SkyPilot cluster on
+request:
+
+- It shows a plan first: the API server, the cluster name, and every file
+  and secret name it will send (the worktree including uncommitted work, the
+  agent's transcript and config, your global instructions). Nothing is
+  launched until you press Enter.
+- Secrets are passed by name with `sky launch --secret`, from your
+  environment; their values are never written to the task file.
+- The box installs the session's agent and resumes the same conversation in
+  tmux; the local session becomes an ssh view of it (`☁` in the list), so
+  Enter, Left and scrolling work as before.
+- `/teleport back` copies the transcript and changed files home and resumes
+  locally. The cluster keeps running (and costing) until `sky down <cluster>`.
+
 ### Look and feel
 Attached sessions look like the agent alone: no tmux status bar, and the
 mouse wheel scrolls the conversation (Left, or scrolling back down, returns).
