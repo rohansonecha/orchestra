@@ -667,6 +667,13 @@ pub fn apply_tmux_setup(left_check: &str) {
     for (opt, val) in [("mode-style", mode), ("message-style", msg)] {
         let _ = Command::new("tmux").args(["set-option", "-g", opt, val]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
+    // tmux 3.6+ can hide copy mode's position counter and style the
+    // selection on its own.
+    if tmux_server_version().is_some_and(|v| v >= (3, 6)) {
+        for (opt, val) in [("copy-mode-position-format", ""), ("copy-mode-selection-style", mode)] {
+            let _ = Command::new("tmux").args(["set-option", "-g", opt, val]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        }
+    }
     // Mouse clicks in orchestra sessions (tagged @orchestra): a click puts
     // you back at the agent's prompt — it leaves copy mode and is not
     // passed to the agent, so agents that track the mouse (Claude Code's
@@ -698,6 +705,19 @@ pub fn apply_tmux_setup(left_check: &str) {
             .stderr(Stdio::null())
             .status();
     }
+}
+
+/// The running tmux server's version as (major, minor), e.g. "3.7c" → (3, 7).
+fn tmux_server_version() -> Option<(u32, u32)> {
+    let out = Command::new("tmux").args(["display-message", "-p", "#{version}"]).output().ok()?;
+    parse_tmux_version(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+fn parse_tmux_version(v: &str) -> Option<(u32, u32)> {
+    let v = v.trim_start_matches("tmux ").trim_start_matches("next-");
+    let (maj, rest) = v.split_once('.')?;
+    let minor: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    Some((maj.parse().ok()?, minor.parse().ok()?))
 }
 
 /// `orchestra tmux-setup`: apply the settings above to the running tmux
@@ -886,6 +906,15 @@ mod tests {
         assert!(a.windows(4).any(|w| w == ["-T", "copy-mode", "f", "send-keys"]));
         assert!(a.windows(4).any(|w| w == ["-T", "copy-mode-vi", "\\;", "send-keys"]));
         assert_eq!(a.last().map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn tmux_versions() {
+        assert_eq!(parse_tmux_version("3.7c"), Some((3, 7)));
+        assert_eq!(parse_tmux_version("tmux 3.4"), Some((3, 4)));
+        assert_eq!(parse_tmux_version("next-3.8"), Some((3, 8)));
+        assert!(parse_tmux_version("3.5a").is_some_and(|v| v < (3, 6)));
+        assert_eq!(parse_tmux_version("garbage"), None);
     }
 
     #[test]
