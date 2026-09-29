@@ -168,6 +168,16 @@ enum Overlay {
     Teleport { session: String, plan: teleport::Plan },
 }
 
+/// A finished switch or fork, from its worker thread. Converting a long
+/// transcript can take seconds, so it never runs on the UI thread.
+struct SwitchDone {
+    /// The session with its new agent/transcript recorded.
+    session: Session,
+    result: Result<String, String>,
+    /// A fork (new session to start) rather than a switch of an existing one.
+    fork: Option<(String, Vec<String>)>,
+}
+
 /// A finished /btw or /recap, from the worker thread.
 struct SideAnswer {
     session: String,
@@ -228,10 +238,15 @@ struct App {
     pi_models: Option<Vec<(String, String, String)>>,
     pi_models_rx: Option<std::sync::mpsc::Receiver<Vec<(String, String, String)>>>,
     side_rx: Option<std::sync::mpsc::Receiver<SideAnswer>>,
+    switch_tx: std::sync::mpsc::Sender<SwitchDone>,
+    switch_rx: std::sync::mpsc::Receiver<SwitchDone>,
+    /// Sessions being switched → what they are switching to.
+    switching: HashMap<String, String>,
 }
 
 impl App {
     fn new() -> Self {
+        let (switch_tx, switch_rx) = std::sync::mpsc::channel();
         let sessions = session::load_sessions();
         let launch_dir = std::env::current_dir().unwrap_or_else(|_| paths::home());
         let repo = repo::detect_for_launch(&launch_dir);
@@ -270,6 +285,9 @@ impl App {
                 Some(rx)
             },
             side_rx: None,
+            switch_tx,
+            switch_rx,
+            switching: HashMap::new(),
         };
         app.rescan_import();
         agent_view::set_light(app.config.light());
@@ -410,6 +428,7 @@ impl App {
 
     fn refresh_activity(&mut self) {
         self.poll_side_answer();
+        self.finish_switches();
         if let Some(rx) = &self.pi_models_rx {
             if let Ok(m) = rx.try_recv() {
                 self.pi_models = Some(m);
@@ -852,22 +871,59 @@ impl App {
 
     /// Move session `idx` to `target`, keeping its conversation, and
     /// restart its tmux session on the new agent.
+    /// Starts the switch on a worker thread. The session keeps running on
+    /// its current agent until the new transcript is fully written; only
+    /// then is it restarted (see `finish_switch`). A switch that fails or
+    /// is interrupted leaves the session as it was.
     fn switch_session(&mut self, idx: usize, target: &switch::Target) -> String {
-        let sess = &mut self.sessions[idx];
-        let summary = match switch::switch(sess, target) {
-            Ok(s) => s,
-            Err(e) => return format!("Switch failed: {e}"),
-        };
-        let name = sess.name.clone();
-        let _ = Command::new("tmux").args(["kill-session", "-t", &name]).status();
-        let _ = std::fs::remove_file(paths::sessions_dir().join(format!("{name}.ready")));
-        sess.state = SessionState::Initializing;
-        if let Err(e) = session::spawn(sess) {
-            return format!("{summary} — but restarting failed: {e}");
+        let name = self.sessions[idx].name.clone();
+        if let Some(t) = self.switching.get(&name) {
+            return format!("{} is already switching to {t}", self.sessions[idx].display_title());
         }
-        session::save_session(sess);
-        self.reload_tree();
-        summary
+        let mut copy = self.sessions[idx].clone_for_read();
+        let target = target.clone();
+        let tx = self.switch_tx.clone();
+        self.switching.insert(name, target.label());
+        std::thread::spawn(move || {
+            let result = switch::switch(&mut copy, &target);
+            let _ = tx.send(SwitchDone { session: copy, result, fork: None });
+        });
+        format!("Switching {} to {} — it keeps running until the switch is ready", self.sessions[idx].display_title(), self.switching[&self.sessions[idx].name])
+    }
+
+    /// Apply finished switches and forks (called every frame).
+    fn finish_switches(&mut self) {
+        while let Ok(done) = self.switch_rx.try_recv() {
+            let name = done.session.name.clone();
+            self.switching.remove(&name);
+            match (done.result, done.fork) {
+                (Ok(summary), Some((msg, warnings))) => {
+                    self.start_session(done.session, format!("{msg}: {summary}"), warnings);
+                }
+                (Err(e), Some(_)) => {
+                    self.status_message = format!("Fork failed: {e}");
+                    if let Some((repo, wt, branch)) = done.session.owned_worktree() {
+                        let _ = worktree::remove_worktree(&repo, &wt, &branch);
+                    }
+                }
+                (Ok(summary), None) => {
+                    let Some(idx) = self.sessions.iter().position(|s| s.name == name) else { continue };
+                    self.sessions[idx] = done.session;
+                    let sess = &mut self.sessions[idx];
+                    let _ = Command::new("tmux").args(["kill-session", "-t", &name]).status();
+                    let _ = std::fs::remove_file(paths::sessions_dir().join(format!("{name}.ready")));
+                    sess.state = SessionState::Initializing;
+                    self.status_message = match session::spawn(sess) {
+                        Ok(()) => summary,
+                        Err(e) => format!("{summary} — but restarting failed: {e}"),
+                    };
+                    session::save_session(sess);
+                    self.activity_scanned = None;
+                    self.reload_tree();
+                }
+                (Err(e), None) => self.status_message = format!("Switch failed, nothing changed: {e}"),
+            }
+        }
     }
 
     fn clear_input(&mut self) {
@@ -1089,22 +1145,18 @@ impl App {
             None => sess.worktree_path = ext.cwd.clone(),
         }
         let target = switch::Target { backend: Backend::Pi, model: self.config.model_for(Backend::Pi) };
-        match switch::switch(&mut sess, &target) {
-            Ok(summary) => {
-                let from = match (&ext.git_branch, &src_head) {
-                    (Some(b), Some(_)) if sess.branch.is_some() => format!(", worktree from {b} HEAD"),
-                    _ => String::new(),
-                };
-                self.start_session(sess, format!("Forked as {name}: {summary}{from}"), warnings);
-                self.mode = ViewMode::Agent;
-            }
-            Err(e) => {
-                self.status_message = format!("Fork failed: {e}");
-                if let Some((repo, wt, branch)) = sess.owned_worktree() {
-                    let _ = worktree::remove_worktree(&repo, &wt, &branch);
-                }
-            }
-        }
+        let from = match (&ext.git_branch, &src_head) {
+            (Some(b), Some(_)) if sess.branch.is_some() => format!(", worktree from {b} HEAD"),
+            _ => String::new(),
+        };
+        let msg = format!("Forked \"{}\" into pi{from}", ext.title);
+        let tx = self.switch_tx.clone();
+        self.switching.insert(name.clone(), target.label());
+        self.status_message = format!("Forking \"{}\" into pi — converting its transcript…", ext.title);
+        std::thread::spawn(move || {
+            let result = switch::switch(&mut sess, &target);
+            let _ = tx.send(SwitchDone { session: sess, result, fork: Some((msg, warnings)) });
+        });
     }
 
     // --- Tree View navigation ---
@@ -2248,7 +2300,8 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         .iter()
         .map(|s| {
             let act = app.activity.get(&s.name);
-            let status = if s.state == SessionState::Initializing {
+            let switching = app.switching.get(&s.name);
+            let status = if switching.is_some() || s.state == SessionState::Initializing {
                 Status::Starting
             } else if working(s) {
                 Status::Working
@@ -2259,8 +2312,11 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             Row {
                 status,
                 name: s.display_title(),
-                label: None,
-                summary: act.and_then(|a| a.summary.clone()).unwrap_or_else(|| s.prompt.clone()),
+                label: switching.map(|_| "Switching".to_string()),
+                summary: match switching {
+                    Some(t) => format!("switching to {t}…"),
+                    None => act.and_then(|a| a.summary.clone()).unwrap_or_else(|| s.prompt.clone()),
+                },
                 meta: {
                     let mut m = agent.label();
                     if let Some(r) = &s.remote {

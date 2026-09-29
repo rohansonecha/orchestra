@@ -418,10 +418,39 @@ fn read_lines(path: &Path) -> std::io::Result<Vec<Value>> {
         .collect())
 }
 
+/// Number of lines, counting newline bytes (no per-line allocation; fast
+/// on the 100 MB transcripts long Claude Code sessions reach).
 pub fn line_count(path: &Path) -> usize {
-    std::fs::File::open(path)
-        .map(|f| BufReader::new(f).lines().count())
-        .unwrap_or(0)
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return 0 };
+    let mut buf = vec![0u8; 1 << 20];
+    let mut n = 0;
+    while let Ok(k) = f.read(&mut buf) {
+        if k == 0 {
+            break;
+        }
+        n += buf[..k].iter().filter(|&&b| b == b'\n').count();
+    }
+    n
+}
+
+/// The last lines of a file as JSON, reading only its final `bytes`.
+fn tail_values(path: &Path, bytes: u64) -> Vec<Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return Vec::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(bytes);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut data = Vec::new();
+    let _ = f.read_to_end(&mut data);
+    let text = String::from_utf8_lossy(&data);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0); // partial first line
+    }
+    lines.iter().filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
 fn result_text(content: &Value) -> String {
@@ -868,7 +897,7 @@ pub fn claude_ready(msgs: Vec<Msg>) -> Vec<Msg> {
 
 /// Model of the last assistant turn in a Claude transcript.
 pub fn claude_last_model(file: &Path) -> Option<String> {
-    let lines = read_lines(file).ok()?;
+    let lines = tail_values(file, 4 << 20);
     lines.iter().rev().find_map(|e| {
         (e.get("type").and_then(Value::as_str) == Some("assistant"))
             .then(|| e.pointer("/message/model").and_then(Value::as_str).map(str::to_string))
@@ -879,31 +908,57 @@ pub fn claude_last_model(file: &Path) -> Option<String> {
 
 /// Last uuid of a Claude transcript.
 pub fn claude_leaf(file: &Path) -> Option<String> {
-    let lines = read_lines(file).ok()?;
+    let lines = tail_values(file, 4 << 20);
     lines.iter().rev().find_map(|e| s(e, "uuid"))
 }
 
 /// Copy a Claude transcript under a new session id (a fork), so appending
-/// never touches the original (it may still be open somewhere).
+/// never touches the original (it may still be open somewhere). Streams
+/// the file once, replacing the old session id (the file name) byte for
+/// byte — no JSON re-encoding, so an 83 MB transcript copies in about a
+/// second instead of minutes.
 pub fn fork_claude(src: &Path, dst: &Path, new_id: &str) -> std::io::Result<()> {
+    use std::io::{BufRead, Write};
     if let Some(d) = dst.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let mut out = std::fs::File::create(dst)?;
-    for mut v in read_lines(src)? {
-        if v.is_null() {
+    let old_id = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let (old, new) = (old_id.as_bytes(), new_id.as_bytes());
+    let mut input = BufReader::with_capacity(1 << 20, std::fs::File::open(src)?);
+    let mut out = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(dst)?);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if input.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        if old.is_empty() || !line.windows(old.len()).any(|w| w == old) {
+            out.write_all(&line)?;
             continue;
         }
-        if let Some(o) = v.as_object_mut() {
-            for k in ["sessionId", "session_id"] {
-                if o.contains_key(k) {
-                    o.insert(k.to_string(), json!(new_id));
-                }
+        let mut i = 0;
+        while i < line.len() {
+            if line[i..].starts_with(old) {
+                out.write_all(new)?;
+                i += old.len();
+            } else {
+                out.write_all(&line[i..i + 1])?;
+                i += 1;
             }
         }
-        writeln!(out, "{v}")?;
     }
-    Ok(())
+    if !line.ends_with(b"\n") && !line.is_empty() {
+        out.write_all(b"\n")?;
+    }
+    out.flush()
+}
+
+/// Path for building a transcript before it appears under its real name:
+/// `x.jsonl` → `x.jsonl.part` (not a `.jsonl`, so nothing lists it).
+pub fn part_path(file: &Path) -> PathBuf {
+    let mut p = file.as_os_str().to_owned();
+    p.push(".part");
+    PathBuf::from(p)
 }
 
 /// Codex rollouts can't take foreign tool calls (its tools are JavaScript
@@ -1170,6 +1225,21 @@ mod tests {
     }
 
     #[test]
+    fn fork_replaces_id_and_keeps_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("11111111-aaaa.jsonl");
+        std::fs::write(&src, "{\"sessionId\":\"11111111-aaaa\",\"uuid\":\"u1\",\"type\":\"user\"}\n{\"type\":\"assistant\",\"uuid\":\"u2\",\"sessionId\":\"11111111-aaaa\",\"message\":{\"model\":\"claude-x\"}}\n").unwrap();
+        let dst = tmp.path().join("new.jsonl");
+        fork_claude(&src, &dst, "22222222-bbbb").unwrap();
+        let out = std::fs::read_to_string(&dst).unwrap();
+        assert!(!out.contains("11111111-aaaa") && out.matches("22222222-bbbb").count() == 2);
+        assert_eq!(line_count(&dst), 2);
+        assert_eq!(claude_leaf(&dst).as_deref(), Some("u2"));
+        assert_eq!(claude_last_model(&dst).as_deref(), Some("claude-x"));
+        assert!(part_path(&dst).to_string_lossy().ends_with("new.jsonl.part"));
+    }
+
+    #[test]
     fn cap_keeps_head_and_tail() {
         let s = format!("{}END", "a".repeat(100));
         let c = cap(&s, 30);
@@ -1182,3 +1252,4 @@ mod tests {
         assert!(d.ends_with("-home-sky-sky-workdir-feature-plugin--claude-worktrees-x"));
     }
 }
+

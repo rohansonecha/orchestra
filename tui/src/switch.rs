@@ -285,14 +285,18 @@ pub fn switch(sess: &mut Session, target: &Target) -> Result<String, String> {
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S-%3fZ");
             let file = dir.join(format!("{ts}_{}.jsonl", uuid::Uuid::new_v4()));
+            // Built under .part and renamed when complete, so an interrupted
+            // switch never leaves a half-written session behind.
+            let part = history::part_path(&file);
             let parent = match &base {
                 Some(b) => {
-                    std::fs::copy(&b.path, &file).map_err(|e| e.to_string())?;
-                    history::pi_leaf(&file)
+                    std::fs::copy(&b.path, &part).map_err(|e| e.to_string())?;
+                    history::pi_leaf(&part)
                 }
                 None => None,
             };
-            history::append_pi(&file, &msgs, &cwd, parent, target.model.as_deref()).map_err(|e| e.to_string())?;
+            history::append_pi(&part, &msgs, &cwd, parent, target.model.as_deref()).map_err(|e| e.to_string())?;
+            std::fs::rename(&part, &file).map_err(|e| e.to_string())?;
             let seed = history::pi_entry_count(&file);
             sess.origin = Origin::Resumed;
             sess.external_id = None;
@@ -301,15 +305,17 @@ pub fn switch(sess: &mut Session, target: &Target) -> Result<String, String> {
         Backend::Claude => {
             let id = uuid::Uuid::new_v4().to_string();
             let file = history::claude_project_dir(&cwd).join(format!("{id}.jsonl"));
+            let part = history::part_path(&file);
             let parent = match &base {
                 Some(b) => {
-                    history::fork_claude(Path::new(&b.path), &file, &id).map_err(|e| e.to_string())?;
-                    history::claude_leaf(&file)
+                    history::fork_claude(Path::new(&b.path), &part, &id).map_err(|e| e.to_string())?;
+                    history::claude_leaf(&part)
                 }
                 None => None,
             };
-            history::append_claude(&file, &history::claude_ready(msgs), &cwd, &id, parent, target.model.as_deref())
+            history::append_claude(&part, &history::claude_ready(msgs), &cwd, &id, parent, target.model.as_deref())
                 .map_err(|e| e.to_string())?;
+            std::fs::rename(&part, &file).map_err(|e| e.to_string())?;
             let seed = history::line_count(&file);
             sess.origin = Origin::Resumed;
             sess.external_id = Some(id);

@@ -166,7 +166,7 @@ pub fn row_line(r: &Row, w: usize, selected: bool) -> Line<'static> {
 pub fn row_line_with(r: &Row, w: usize, selected: bool, meta_w: usize) -> Line<'static> {
     let (glyph, gcolor) = r.status.glyph();
     let (word, wcolor) = match &r.label {
-        Some(l) => (l.as_str(), grey()),
+        Some(l) => (l.as_str(), accent()),
         None => r.status.word(),
     };
     let name_w = (w * 3 / 10).clamp(16, 44);
