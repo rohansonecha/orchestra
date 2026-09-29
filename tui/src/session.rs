@@ -673,6 +673,17 @@ pub fn apply_tmux_setup(left_check: &str) {
         for (opt, val) in [("copy-mode-position-format", ""), ("copy-mode-selection-style", mode)] {
             let _ = Command::new("tmux").args(["set-option", "-g", opt, val]).stdout(Stdio::null()).stderr(Stdio::null()).status();
         }
+        // Copy mode (scrolling) draws its own cursor, which stays on the
+        // same screen row while the text scrolls under it. tmux can't hide
+        // it, but in 3.6+ it uses the window's cursor options: while an
+        // orchestra pane is in copy mode, make it a bar in the terminal's
+        // background colour (a block would blank the character under it),
+        // and restore the normal cursor on leaving.
+        let bg = if light { "colour231" } else { "colour234" };
+        let hook = format!(
+            "if-shell -F \"#{{&&:#{{@orchestra}},#{{pane_in_mode}}}}\" \"set -w cursor-colour {bg} ; set -w cursor-style bar\" \"set -wu cursor-colour ; set -wu cursor-style\""
+        );
+        let _ = Command::new("tmux").args(["set-hook", "-g", "pane-mode-changed", &hook]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
     // Mouse clicks in orchestra sessions (tagged @orchestra): a click puts
     // you back at the agent's prompt — it leaves copy mode and is not
