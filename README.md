@@ -152,7 +152,7 @@ sky launch --infra "$SKY_INFRA" -c main-box skypilot/main-box.yaml
 ### 5. SSH in and run the TUI
 
 ```bash
-sky ssh main-box
+ssh main-box
 orchestra
 ```
 
