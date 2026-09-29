@@ -254,6 +254,23 @@ fi
 [ -L "$HOME/.orchestra/skills" ] || ln -sfn "$ORCHESTRA_HOME/skills" "$HOME/.orchestra/skills"
 ok "~/.orchestra/skills → $ORCHESTRA_HOME/skills"
 
+# pi look and feel, matching Claude Code: tool calls rendered like Claude's
+# (extension), Claude's light/dark palettes (themes), reasoning hidden and a
+# quiet startup. Existing pi settings are kept; only missing keys are added.
+mkdir -p "$HOME/.pi/agent/extensions" "$HOME/.pi/agent/themes"
+ln -sfn "$ORCHESTRA_HOME/pi/extensions/claude-look.ts" "$HOME/.pi/agent/extensions/claude-look.ts"
+ln -sfn "$ORCHESTRA_HOME/skypilot/pi-theme-light.json" "$HOME/.pi/agent/themes/orchestra-light.json"
+ln -sfn "$ORCHESTRA_HOME/skypilot/pi-theme.json" "$HOME/.pi/agent/themes/orchestra-dark.json"
+python3 - "$HOME/.pi/agent/settings.json" <<'PY' || warn "could not update pi settings"
+import json, os, sys
+p = sys.argv[1]
+s = json.load(open(p)) if os.path.exists(p) else {}
+for k, v in {"theme": "orchestra-light", "hideThinkingBlock": True, "quietStartup": True, "collapseChangelog": True}.items():
+    s.setdefault(k, v)
+json.dump(s, open(p, "w"), indent=2)
+PY
+ok "pi: claude-look extension, orchestra themes, quiet settings"
+
 # --------------------------------------------------------------------------
 # Done
 # --------------------------------------------------------------------------

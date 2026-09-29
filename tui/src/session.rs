@@ -458,7 +458,7 @@ pub fn spawn_with(sess: &Session, pre: Option<&str>) -> std::io::Result<()> {
     };
     let cmd_str = format!(
         "[ -f {env_file} ] && {{ set -a; . {env_file}; set +a; }}
-        export COLORTERM=truecolor
+        export COLORTERM=truecolor PI_SKIP_VERSION_CHECK=1
         (
             for i in $(seq 1 30); do
                 if {ready_check}; then break; fi

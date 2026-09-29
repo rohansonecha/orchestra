@@ -165,10 +165,22 @@ request:
 ### Look and feel
 Attached sessions look like the agent alone: no tmux status bar, and the
 mouse wheel scrolls the conversation (Left, or scrolling back down, returns).
-pi uses Claude Code's palettes: `orchestra-light` and `orchestra-dark` themes
-(`skypilot/pi-theme-light.json`, `skypilot/pi-theme.json`), with no colored
-boxes behind tool output. `/theme` switches orchestra and pi together; a
-running pi session picks the change up with `/reload`.
+pi is set up to look like Claude Code:
+
+- `pi/extensions/claude-look.ts` renders tool calls the way Claude Code does:
+  `● Bash(command)` with the dot gray while running, green when done and red
+  on error, then the output in gray under `⎿`, three lines at most (each cut
+  to one screen line) until you expand it with Ctrl+O. Reads, searches and
+  listings show a one-line summary such as `Read 240 lines`. Tool behavior is
+  unchanged; only the drawing is.
+- Claude Code's palettes: `orchestra-light` and `orchestra-dark` themes
+  (`skypilot/pi-theme-light.json`, `skypilot/pi-theme.json`), with no colored
+  boxes behind tool output.
+- Reasoning is hidden (as in Claude Code), and the startup banner and update
+  notice are off.
+
+`install.sh` installs all of this. `/theme` switches orchestra and pi
+together; a running pi session picks changes up with `/reload`.
 
 ### Resume after disconnect
 Session state is persisted to `~/.orchestra/sessions/<name>/state.json`. On TUI
