@@ -41,6 +41,9 @@ any model from pi's built-in providers or from a custom provider in
 are saved in `~/.orchestra/config.json`.
 
 ### Navigate between sessions
+orchestra opens in Agent View, the session list. `Tab` switches to Tree View
+and back.
+
 - `↑` / `↓` — move between sessions in the list
 - `→` or `Enter` (on empty input) — attach to the selected session (full-screen
   pi interactive mode)

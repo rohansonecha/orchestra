@@ -2,9 +2,9 @@
 // (pi, Claude Code, Codex), each in its own git worktree.
 //
 // Two-level TUI (Design_Document.md §9):
-//   - Tree View (default): spatial graph of the agent/session hierarchy.
-//   - Agent View: the classic session list + dispatch input, scoped to one
+//   - Agent View (default): the classic session list + dispatch input, scoped to one
 //     agent (the Main Agent for now; sub-agents are read-only).
+//   - Tree View: spatial graph of the agent/session hierarchy (Tab).
 //
 // Keybindings — Tree View:
 //   ←/→         — parent / nearest child (depth traversal)
@@ -150,7 +150,7 @@ impl App {
             cursor_pos: 0,
             status_message: String::new(),
             needs_clear: false,
-            mode: ViewMode::Tree,
+            mode: ViewMode::Agent,
             agent_view_scope: None,
             tree: Tree::default(),
             selected_node_id: None,
