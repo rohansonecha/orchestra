@@ -82,6 +82,17 @@ pub struct Row {
 pub struct Group {
     pub title: String,
     pub rows: Vec<Row>,
+    /// Header is a selectable row that folds the group (▾ open, ▸ closed).
+    pub collapsible: bool,
+    pub collapsed: bool,
+    /// Rows hidden while collapsed (shown in the header).
+    pub hidden: usize,
+}
+
+impl Group {
+    pub fn plain(title: impl Into<String>, rows: Vec<Row>) -> Self {
+        Self { title: title.into(), rows, collapsible: false, collapsed: false, hidden: 0 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,13 +267,38 @@ pub fn render(buf: &mut Buffer, area: Rect, vm: &ViewModel) -> (u16, u16) {
             let mut sel_line = None;
             let mut idx = 0usize;
             for (gi, g) in vm.groups.iter().enumerate() {
-                if g.rows.is_empty() {
+                if g.rows.is_empty() && !(g.collapsible && g.hidden > 0) {
                     continue;
                 }
                 if gi > 0 && !lines.is_empty() {
                     lines.push(Line::raw(""));
                 }
-                lines.push(Line::from(Span::styled(format!(" {}", g.title), Style::default().fg(grey()))));
+                if g.collapsible {
+                    // The header is a row of its own: it can be selected
+                    // and folds the group.
+                    let selected = vm.selected == Some(idx);
+                    if selected {
+                        sel_line = Some(lines.len());
+                    }
+                    let arrow = if g.collapsed { "▸" } else { "▾" };
+                    let count = if g.collapsed { format!("  {} hidden", g.hidden) } else { String::new() };
+                    let style = if selected {
+                        Style::default().fg(bright()).bg(selected_bg()).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(grey())
+                    };
+                    let mut line = Line::from(vec![
+                        Span::styled(format!(" {arrow} {}", g.title), style),
+                        Span::styled(count, Style::default().fg(dim())),
+                    ]);
+                    if selected {
+                        line = line.style(Style::default().bg(selected_bg()));
+                    }
+                    lines.push(line);
+                    idx += 1;
+                } else {
+                    lines.push(Line::from(Span::styled(format!(" {}", g.title), Style::default().fg(grey()))));
+                }
                 for r in &g.rows {
                     let selected = vm.selected == Some(idx);
                     if selected {
@@ -420,8 +456,8 @@ mod tests {
     #[test]
     fn renders_groups_prompt_and_footer() {
         let v = vm(vec![
-            Group { title: "Sessions".into(), rows: vec![row("a", Status::Working), row("b", Status::Ready)] },
-            Group { title: "Claude Code · not in orchestra".into(), rows: vec![row("c", Status::Elsewhere)] },
+            Group::plain("Sessions", vec![row("a", Status::Working), row("b", Status::Ready)]),
+            Group::plain("Claude Code · not in orchestra", vec![row("c", Status::Elsewhere)]),
         ]);
         let area = Rect::new(0, 0, 100, 20);
         let mut buf = Buffer::empty(area);
@@ -442,13 +478,27 @@ mod tests {
     #[test]
     fn scrolls_to_keep_selection_visible() {
         let rows: Vec<Row> = (0..30).map(|i| row(&format!("s{i}"), Status::Ready)).collect();
-        let mut v = vm(vec![Group { title: "Sessions".into(), rows }]);
+        let mut v = vm(vec![Group::plain("Sessions", rows)]);
         v.selected = Some(29);
         let area = Rect::new(0, 0, 80, 16);
         let mut buf = Buffer::empty(area);
         render(&mut buf, area, &v);
         let screen: Vec<String> = (0..16).map(|y| text_of(&buf, y)).collect();
         assert!(screen.iter().any(|l| l.contains("s29")), "{screen:#?}");
+    }
+
+    #[test]
+    fn collapsed_group_header_is_selectable_and_counts() {
+        let mut v = vm(vec![
+            Group::plain("Sessions", vec![row("a", Status::Ready)]),
+            Group { title: "Claude Code".into(), rows: vec![], collapsible: true, collapsed: true, hidden: 7 },
+        ]);
+        v.selected = Some(1);
+        let area = Rect::new(0, 0, 80, 14);
+        let mut buf = Buffer::empty(area);
+        render(&mut buf, area, &v);
+        let screen: Vec<String> = (0..14).map(|y| text_of(&buf, y)).collect();
+        assert!(screen.iter().any(|l| l.contains("▸ Claude Code  7 hidden")), "{screen:#?}");
     }
 
     #[test]

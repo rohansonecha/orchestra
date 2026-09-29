@@ -108,6 +108,8 @@ struct ImportState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowRef {
     Session(usize),
+    /// Header of the Claude Code / Codex group (folds it).
+    Group(Backend),
     External(usize),
 }
 
@@ -300,16 +302,40 @@ impl App {
     fn rows(&self) -> Vec<RowRef> {
         let mut rows: Vec<RowRef> = (0..self.sessions.len()).map(RowRef::Session).collect();
         for backend in [Backend::Claude, Backend::Codex] {
-            rows.extend(
-                self.import
-                    .items
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.backend == backend && self.managing(e).is_none())
-                    .map(|(i, _)| RowRef::External(i)),
-            );
+            let items: Vec<RowRef> = self
+                .import
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.backend == backend && self.managing(e).is_none())
+                .map(|(i, _)| RowRef::External(i))
+                .collect();
+            if items.is_empty() {
+                continue;
+            }
+            rows.push(RowRef::Group(backend));
+            if !self.is_collapsed(backend) {
+                rows.extend(items);
+            }
         }
         rows
+    }
+
+    fn is_collapsed(&self, b: Backend) -> bool {
+        self.config.collapsed.iter().any(|c| c == b.as_str())
+    }
+
+    /// Fold or unfold a Claude Code / Codex group (remembered in config).
+    fn set_collapsed(&mut self, b: Backend, collapse: bool) {
+        self.config.collapsed.retain(|c| c != b.as_str());
+        if collapse {
+            self.config.collapsed.push(b.as_str().to_string());
+        }
+        self.config.save();
+        // Keep the selection on the group's header.
+        if let Some(p) = self.rows().iter().position(|r| *r == RowRef::Group(b)) {
+            self.sel = p;
+        }
     }
 
     fn selected_row(&self) -> Option<RowRef> {
@@ -1982,6 +2008,10 @@ fn open_selected(app: &mut App) {
             }
         }
         Some(RowRef::External(_)) => app.import_resume(),
+        Some(RowRef::Group(b)) => {
+            let c = app.is_collapsed(b);
+            app.set_collapsed(b, !c);
+        }
         None => {}
     }
 }
@@ -1999,6 +2029,20 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
     {
         app.start_session_rename();
         return false;
+    }
+    if let (true, true, Some(RowRef::Group(b))) = (app.agent_view_scope.is_none(), empty, app.selected_row()) {
+        match key.code {
+            KeyCode::Left => {
+                app.set_collapsed(b, true);
+                return false;
+            }
+            KeyCode::Right | KeyCode::Char(' ') => {
+                let c = app.is_collapsed(b);
+                app.set_collapsed(b, if key.code == KeyCode::Right { false } else { !c });
+                return false;
+            }
+            _ => {}
+        }
     }
     if app.agent_view_scope.is_none() && empty {
         match key.code {
@@ -2263,10 +2307,30 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             })
             .collect()
     };
+    let external_group = |backend: Backend, name: &str| {
+        let total = app
+            .import
+            .items
+            .iter()
+            .filter(|e| e.backend == backend && app.managing(e).is_none())
+            .count();
+        let collapsed = app.is_collapsed(backend);
+        Group {
+            title: if collapsed {
+                format!("{name} · not in orchestra")
+            } else {
+                format!("{name} · not in orchestra — enter adopts, p forks into pi")
+            },
+            rows: if collapsed { Vec::new() } else { ext_rows(backend) },
+            collapsible: total > 0,
+            collapsed,
+            hidden: if collapsed { total } else { 0 },
+        }
+    };
     let groups = vec![
-        Group { title: "Sessions".into(), rows: session_rows },
-        Group { title: "Claude Code · not in orchestra — enter adopts, p forks into pi".into(), rows: ext_rows(Backend::Claude) },
-        Group { title: "Codex · not in orchestra — enter adopts, p forks into pi".into(), rows: ext_rows(Backend::Codex) },
+        Group::plain("Sessions", session_rows),
+        external_group(Backend::Claude, "Claude Code"),
+        external_group(Backend::Codex, "Codex"),
     ];
     let n_working = app.sessions.iter().filter(|s| working(s)).count();
     let n_ready = app.sessions.len() - n_working;
@@ -2282,6 +2346,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
                 ("enter", "open / adopt"), ("s", "switch agent or model"),
                 ("p", "fork into pi"), ("x x", "delete session"),
                 ("a", "all directories"), ("ctrl+r", "rename session"),
+                ("← → on a group", "collapse / expand"),
                 ("/model", "default for new sessions"),
                 ("← (in session)", "back to this list"), ("tab", "complete / tree view"),
                 ("q", "quit"), ("?", "close"),

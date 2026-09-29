@@ -52,6 +52,8 @@ yet. `Tab` switches to Tree View and back.
 - `s` — switch the selected session to another agent or model (a picker, like
   Claude Code's `/model`; number keys pick directly, typing filters)
 - `p` — fork a Claude Code / Codex session into pi
+- `←` / `→` (or `Enter`, `Space`) on the Claude Code or Codex heading —
+  collapse or expand that list; remembered across restarts
 - `a` — show Claude Code / Codex sessions from all directories
 - `Ctrl+R` — rename the selected session
 - `x` twice — delete the selected session

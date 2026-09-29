@@ -21,6 +21,9 @@ pub struct Config {
     /// theme new sessions use (orchestra-light / orchestra-dark).
     #[serde(default)]
     pub theme: Option<String>,
+    /// Folded groups in the list ("claude", "codex").
+    #[serde(default)]
+    pub collapsed: Vec<String>,
 }
 
 impl Config {
