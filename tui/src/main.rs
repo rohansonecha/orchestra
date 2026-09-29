@@ -2195,6 +2195,16 @@ fn attach_to_session(name: &str, status_message: &mut String) {
     // terminal emulator supports 256 colors. Without overriding TERM,
     // tmux renders pi's 256-color output incorrectly — dark green/blue
     // backgrounds appear as grey highlighting on normal text.
+    // Re-apply the per-session look on every attach, so sessions started
+    // by an older orchestra (before these were set at spawn) get it too:
+    // no tmux status bar, mouse wheel scrolls the conversation.
+    for (opt, val) in [("status", "off"), ("mouse", "on")] {
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", name, opt, val])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
     let status = Command::new("tmux")
         .arg("attach")
         .arg("-t")
