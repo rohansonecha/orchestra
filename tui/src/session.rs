@@ -102,6 +102,10 @@ pub struct Session {
     /// Set while the session runs on a SkyPilot box (/teleport).
     #[serde(default)]
     pub remote: Option<crate::teleport::Remote>,
+    /// Display name shown in the list (Ctrl+R / /rename). Independent of
+    /// `name`, which is the tmux session, worktree and branch identity.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// One stretch of a conversation in one agent's own transcript.
@@ -138,12 +142,24 @@ impl Session {
             external_id: None,
             segments: Vec::new(),
             remote: None,
+            title: None,
         }
     }
 
     /// A copy for read-only work on another thread (/btw, /branch).
     pub fn clone_for_read(&self) -> Session {
         serde_json::from_value(serde_json::to_value(self).expect("session serializes")).expect("session deserializes")
+    }
+
+    /// What the list shows: the title if one was set, else the first line
+    /// of the prompt (for adopted sessions, the title Claude Code / Codex
+    /// gave them), tidied up.
+    pub fn display_title(&self) -> String {
+        if let Some(t) = self.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            return t.to_string();
+        }
+        let from_prompt = humanize(&self.prompt);
+        if from_prompt.is_empty() { self.name.clone() } else { from_prompt }
     }
 
     /// Short tag for the session list.
@@ -201,6 +217,24 @@ impl Session {
         } else {
             SessionState::Initializing
         };
+    }
+}
+
+/// A prompt's first line as a readable name: whitespace collapsed, first
+/// letter capitalized, trailing punctuation dropped, at most 60 chars.
+pub fn humanize(prompt: &str) -> String {
+    let line = prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let line: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = line.trim_end_matches(['.', ':', ';', ',', '!', '?']);
+    let mut out: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        out = out.trim_end().to_string();
+        out.push('…');
+    }
+    let mut c = out.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
     }
 }
 
@@ -781,6 +815,20 @@ mod tests {
         assert!(legacy.owned_worktree().is_some());
         legacy.origin = Origin::Resumed;
         assert!(legacy.owned_worktree().is_none());
+    }
+
+    #[test]
+    fn display_titles() {
+        let mut s = sess(Backend::Pi, "fix the add function in calc.py.\nmore detail");
+        assert_eq!(s.display_title(), "Fix the add function in calc.py");
+        s.title = Some("Calc fix".into());
+        assert_eq!(s.display_title(), "Calc fix");
+        s.title = Some("  ".into());
+        assert_eq!(s.display_title(), "Fix the add function in calc.py");
+        let long = humanize(&"word ".repeat(30));
+        assert!(long.ends_with('…') && long.chars().count() <= 61);
+        let empty = sess(Backend::Pi, "");
+        assert_eq!(empty.display_title(), "n");
     }
 
     #[test]

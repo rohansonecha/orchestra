@@ -201,6 +201,8 @@ struct App {
     input_mode: InputMode,
     /// When in Rename mode, the id of the node being renamed.
     rename_target: Option<String>,
+    /// Agent View: the session (by name) whose display name is being edited.
+    rename_session: Option<String>,
     /// Pending delete confirmation: first `x` press sets this to the
     /// selected session index; second `x` confirms + executes. Any other
     /// key clears it. Prevents accidental full-cleanup deletion.
@@ -245,6 +247,7 @@ impl App {
             show_detail: false,
             input_mode: InputMode::Dispatch,
             rename_target: None,
+            rename_session: None,
             pending_delete: None,
             pending_tree_delete: None,
             repo,
@@ -434,6 +437,14 @@ impl App {
                 self.cursor_pos = 0;
                 return;
             }
+            command::DispatchCommand::Rename { new_name } if self.mode == ViewMode::Agent => {
+                self.clear_input();
+                self.status_message = match self.selected() {
+                    Some(i) => self.set_title(i, &new_name),
+                    None => "Select a session to rename".into(),
+                };
+                return;
+            }
             command::DispatchCommand::Rename { new_name } => {
                 self.status_message = self.rename_selected(&new_name);
                 self.reload_tree();
@@ -527,6 +538,10 @@ impl App {
                 let backend = self.config.default_backend;
                 let rname = format!("review-{}-{}", label.chars().take(24).collect::<String>(), tree_store::unix_now() % 1000);
                 let mut sess = Session::new(rname.clone(), commands::review_prompt(args), cwd, backend);
+                sess.title = Some(match selected {
+                    Some(i) => format!("Review: {}", self.sessions[i].display_title()),
+                    None => "Review of this repo".to_string(),
+                });
                 sess.model = self.config.model_for(backend);
                 let who = switch::Target { backend, model: sess.model.clone() }.label();
                 self.start_session(sess, format!("Reviewing {label} with {who} as {rname}"), Vec::new());
@@ -680,6 +695,7 @@ impl App {
         };
         let mut dst = Session::new(new_name.clone(), src.prompt.clone(), String::new(), src.backend);
         dst.model = src.model.clone();
+        dst.title = Some(if name.is_empty() { format!("{} (branch)", src.display_title()) } else { name.to_string() });
         let mut carried = String::new();
         let src_dir = std::path::Path::new(&src.worktree_path);
         match repo::detect(src_dir) {
@@ -1012,6 +1028,7 @@ impl App {
         // Adopt it as it is, then switch the copy to pi: the same path as
         // switching a running session (switch.rs), so tool calls carry over.
         let mut sess = Session::new(name.clone(), ext.title.clone(), String::new(), ext.backend);
+        sess.title = Some(format!("{} (pi)", ext.title));
         sess.origin = Origin::Resumed;
         sess.external_id = Some(ext.id.clone());
         sess.segments.push(session::Segment {
@@ -1169,7 +1186,46 @@ impl App {
         }
     }
 
+    /// Set a session's display name. Only the name shown changes; its
+    /// tmux session, worktree and branch keep their names, so this is safe
+    /// while the agent is running.
+    fn set_title(&mut self, idx: usize, title: &str) -> String {
+        let title = title.trim();
+        let s = &mut self.sessions[idx];
+        let old = s.display_title();
+        s.title = if title.is_empty() { None } else { Some(title.to_string()) };
+        session::save_session(s);
+        self.reload_tree();
+        let s = &self.sessions[idx];
+        if title.is_empty() {
+            format!("Name reset to '{}'", s.display_title())
+        } else {
+            format!("Renamed '{old}' to '{}'", s.display_title())
+        }
+    }
+
+    /// Ctrl+R in Agent View: edit the selected session's name in place.
+    fn start_session_rename(&mut self) {
+        let Some(i) = self.selected() else {
+            self.status_message = "Select one of your sessions to rename".into();
+            return;
+        };
+        self.rename_session = Some(self.sessions[i].name.clone());
+        self.input_mode = InputMode::Rename;
+        self.input = self.sessions[i].display_title();
+        self.cursor_pos = self.input.chars().count();
+    }
+
     fn commit_rename(&mut self) {
+        if let Some(name) = self.rename_session.take() {
+            let title = self.input.clone();
+            self.input_mode = InputMode::Dispatch;
+            self.clear_input();
+            if let Some(i) = self.sessions.iter().position(|s| s.name == name) {
+                self.status_message = self.set_title(i, &title);
+            }
+            return;
+        }
         let new_name = self.input.trim().to_string();
         if new_name.is_empty() {
             self.status_message = "Rename cancelled (empty name)".to_string();
@@ -1206,43 +1262,13 @@ impl App {
                 format!("Renamed to '{display}'")
             }
             NodeKind::Session => {
-                let old = node.tmux_session.clone().unwrap_or_else(|| node.name.clone());
-                // Flush in-memory state first so the rename reads (and
-                // rewrites) the current state.json.
-                if let Some(s) = self.sessions.iter().find(|s| s.name == old) {
-                    session::save_session(s);
+                // Display name only (see set_title); `orchestra rename`
+                // on the command line still renames tmux/worktree/branch.
+                let tmux = node.tmux_session.clone().unwrap_or_else(|| node.name.clone());
+                match self.sessions.iter().position(|s| s.name == tmux) {
+                    Some(i) => self.set_title(i, &display),
+                    None => format!("{tmux} is not one of this window's sessions"),
                 }
-                let paths = rename::paths_for_session(&old);
-                let out = rename::rename_session(&old, &display, &paths);
-                if out.new_name.is_empty() {
-                    return format!("Rename failed: {}", out.logs.join("; "));
-                }
-                if out.new_name == old {
-                    // Sanitized name unchanged — label-only update.
-                    rename::set_display_name(&id, &display, &paths);
-                    return format!("Renamed to '{display}'");
-                }
-                // Keep the in-memory session list + selection in sync.
-                // Reload the renamed session so its worktree path / branch
-                // match what rename wrote to disk.
-                let state = paths::sessions_dir().join(&out.new_name).join("state.json");
-                let renamed = std::fs::read_to_string(state)
-                    .ok()
-                    .and_then(|c| serde_json::from_str::<Session>(&c).ok());
-                for s in self.sessions.iter_mut() {
-                    if s.name == old {
-                        match &renamed {
-                            Some(r) => {
-                                s.name = r.name.clone();
-                                s.worktree_path = r.worktree_path.clone();
-                                s.branch = r.branch.clone();
-                            }
-                            None => s.name = out.new_name.clone(),
-                        }
-                    }
-                }
-                self.selected_node_id = Some(format!("session-{}", out.new_name));
-                format!("Renamed '{old}' -> '{}'", out.new_name)
             }
         }
     }
@@ -1250,6 +1276,7 @@ impl App {
     fn cancel_rename(&mut self) {
         self.input_mode = InputMode::Dispatch;
         self.rename_target = None;
+        self.rename_session = None;
         self.input.clear();
         self.cursor_pos = 0;
         self.status_message = "Rename cancelled".to_string();
@@ -1466,7 +1493,7 @@ fn synthesize_tree_from_sessions(sessions: &[Session]) -> Tree {
             kind: NodeKind::Session,
             parent_id: Some(ROOT_AGENT_ID.to_string()),
             name: s.name.clone(),
-            display_name: None,
+            display_name: Some(s.display_title()),
             sky_cluster: None,
             tmux_session: Some(s.name.clone()),
             box_host: None,
@@ -1684,29 +1711,44 @@ fn main() -> anyhow::Result<()> {
 
     let mut app = App::new();
 
-    loop {
+    let mut last_refresh: Option<Instant> = None;
+    'main: loop {
+        let returned = app.needs_clear;
         if app.needs_clear {
             terminal.clear()?;
             app.needs_clear = false;
         }
+        // Session state (one tmux call per session) and the tree (disk
+        // reads) refresh about once a second, and right after returning
+        // from a session — not on every keystroke, which made typing lag.
+        if returned || last_refresh.is_none_or(|t| t.elapsed().as_millis() >= 1000) {
+            for sess in &mut app.sessions {
+                sess.refresh_state();
+            }
+            app.reload_tree();
+            last_refresh = Some(Instant::now());
+        }
+        app.refresh_activity();
         terminal.draw(|f| ui(f, &mut app))?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if handle_key(&mut app, key) {
+        // Wait for input, then handle everything already queued before the
+        // next redraw, so fast typing and pastes land at once.
+        if event::poll(std::time::Duration::from_millis(250))? {
+            loop {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind != event::KeyEventKind::Release && handle_key(&mut app, key) {
+                        break 'main;
+                    }
+                    if app.needs_clear {
+                        // Just came back from a session: redraw first.
+                        break;
+                    }
+                }
+                if !event::poll(std::time::Duration::ZERO)? {
                     break;
                 }
             }
         }
-
-        for sess in &mut app.sessions {
-            sess.refresh_state();
-        }
-        app.refresh_activity();
-        // Refresh the tree every poll cycle. Cheap: a few small JSON files,
-        // or the in-memory synthesis. Keeps the tree live as the collector
-        // writes new state.
-        app.reload_tree();
     }
 
     restore_terminal();
@@ -1951,6 +1993,13 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
     // Single-letter commands only apply to an empty input; otherwise they
     // are text (a prompt containing "q" must not quit).
     let empty = app.input.is_empty();
+    if app.agent_view_scope.is_none()
+        && key.code == KeyCode::Char('r')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        app.start_session_rename();
+        return false;
+    }
     if app.agent_view_scope.is_none() && empty {
         match key.code {
             KeyCode::Char('?') => {
@@ -2165,7 +2214,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             let agent = switch::Target { backend: s.backend, model: s.model.as_ref().map(|m| m.rsplit('/').next().unwrap_or(m).to_string()) };
             Row {
                 status,
-                name: s.name.clone(),
+                name: s.display_title(),
                 label: None,
                 summary: act.and_then(|a| a.summary.clone()).unwrap_or_else(|| s.prompt.clone()),
                 meta: {
@@ -2232,7 +2281,8 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             [
                 ("enter", "open / adopt"), ("s", "switch agent or model"),
                 ("p", "fork into pi"), ("x x", "delete session"),
-                ("a", "all directories"), ("/model", "default for new sessions"),
+                ("a", "all directories"), ("ctrl+r", "rename session"),
+                ("/model", "default for new sessions"),
                 ("← (in session)", "back to this list"), ("tab", "complete / tree view"),
                 ("q", "quit"), ("?", "close"),
             ]
@@ -2288,8 +2338,11 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             })
         }
     };
-    let footer_is_status = !app.status_message.is_empty();
-    let footer = if footer_is_status {
+    let renaming = app.rename_session.is_some() && app.input_mode == InputMode::Rename;
+    let footer_is_status = !app.status_message.is_empty() && !renaming;
+    let footer = if renaming {
+        "rename — enter to save · esc to cancel · empty resets to the default name".into()
+    } else if footer_is_status {
         app.status_message.clone()
     } else if matches!(app.overlay, Some(Overlay::Picker(_))) {
         "enter to select · 1–9 to pick · type to filter · esc to cancel".into()
@@ -2319,7 +2372,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         selected: Some(app.sel.min(app.rows().len().saturating_sub(1))).filter(|_| !app.rows().is_empty()),
         input: app.input.clone(),
         cursor: app.cursor_pos,
-        placeholder: "describe a task for a new session".into(),
+        placeholder: if renaming { "new name".into() } else { "describe a task for a new session".into() },
         footer,
         footer_is_status,
         overlay,

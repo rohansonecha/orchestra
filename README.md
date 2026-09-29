@@ -53,6 +53,7 @@ yet. `Tab` switches to Tree View and back.
   Claude Code's `/model`; number keys pick directly, typing filters)
 - `p` — fork a Claude Code / Codex session into pi
 - `a` — show Claude Code / Codex sessions from all directories
+- `Ctrl+R` — rename the selected session
 - `x` twice — delete the selected session
 - `/` — commands, with completions above the prompt (`Tab` completes)
 - `?` — shortcuts
@@ -194,20 +195,19 @@ conversation directory (`~/.orchestra/pi-sessions/<id>/`), Claude Code with
 `--resume`, and Codex with `resume`.
 
 ### Rename a session
-Renaming moves the session's *whole* identity, not just its label:
+Sessions are listed by a readable name: the title Claude Code or Codex gave an
+adopted session, or the first line of the prompt for one you dispatched.
 
-- **Tree View:** select the session and press `n`, type a name, Enter.
-- **Dispatch input:** `/rename My Session` (renames the node currently
-  selected in Tree View).
-- **CLI:** `orchestra rename <old-name> <new-name>`
+- **Ctrl+R** on the selected session edits its name in place; Enter saves,
+  Esc cancels, and an empty name goes back to the default.
+- **`/rename My Session`** does the same from the prompt.
 
-A rename updates the tmux session, the git worktree dir + branch, the state
-dir (`~/.orchestra/sessions/`), and the tree-store node id — so the
-collector keeps matching the node instead of creating a duplicate. The label
-keeps your raw text (`My Session`) while the underlying name is sanitized
-(`my-session`). The pi conversation is stored under the session's id, which
-never changes, so it is unaffected. Imported sessions keep their directory;
-only orchestra's own names change.
+Renaming changes only the name shown. The session's tmux session, worktree
+and branch keep their names, so it is safe while the agent is working.
+
+To rename those too, use the command line: `orchestra rename <old-name>
+<new-name>` moves the tmux session, the git worktree directory and branch,
+the state directory and the tree-store node together.
 
 ## Architecture
 

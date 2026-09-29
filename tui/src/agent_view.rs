@@ -158,7 +158,7 @@ pub fn row_line_with(r: &Row, w: usize, selected: bool, meta_w: usize) -> Line<'
         Some(l) => (l.as_str(), grey()),
         None => r.status.word(),
     };
-    let name_w = (w / 4).clamp(16, 34);
+    let name_w = (w * 3 / 10).clamp(16, 44);
     let right = format!("{:>meta_w$}  {:>4}", fit(&r.meta, meta_w), r.age);
     let right_w = width(&right);
     let summary_w = w.saturating_sub(3 + name_w + 2 + width(word) + 3 + right_w + 2);
