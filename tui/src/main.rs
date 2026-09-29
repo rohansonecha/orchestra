@@ -1670,6 +1670,12 @@ fn main() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(paths::sessions_dir()).ok();
 
+    // Put the terminal back even if orchestra panics.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_hook(info);
+    }));
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -1703,8 +1709,7 @@ fn main() -> anyhow::Result<()> {
         app.reload_tree();
     }
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    restore_terminal();
     session::save_sessions(&app.sessions);
     Ok(())
 }
@@ -2037,9 +2042,8 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
 }
 
 fn attach_to_session(name: &str, status_message: &mut String) {
-    // Don't leave the alternate screen — tmux handles its own screen
-    // management. Leaving/entering the alternate screen causes a flash
-    // of the normal terminal buffer between transitions.
+    // tmux draws on the alternate screen and switches back to the normal
+    // screen when the client detaches, so orchestra re-enters it below.
     disable_raw_mode().ok();
 
     // The main-box has TERM=dumb (set by SkyPilot/SSH), but the actual
@@ -2054,8 +2058,10 @@ fn attach_to_session(name: &str, status_message: &mut String) {
         .status();
 
     enable_raw_mode().ok();
-    // Force a full redraw — tmux corrupted our screen buffer.
-    execute!(io::stdout(), Clear(ClearType::All)).ok();
+    // tmux's detach left the alternate screen. Without re-entering it,
+    // orchestra would keep drawing on the shell's normal screen and leave
+    // its last frame there on quit.
+    execute!(io::stdout(), EnterAlternateScreen, Clear(ClearType::All)).ok();
 
     match status {
         Ok(s) if !s.success() => {
@@ -2066,6 +2072,13 @@ fn attach_to_session(name: &str, status_message: &mut String) {
         }
         _ => {}
     }
+}
+
+/// Leave raw mode and the alternate screen, and show the cursor again, so
+/// the shell is exactly as it was before orchestra started.
+fn restore_terminal() {
+    disable_raw_mode().ok();
+    execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show).ok();
 }
 
 /// Pull latest code and rebuild the TUI binary. tmux sessions are
