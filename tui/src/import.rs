@@ -44,6 +44,7 @@ const TAIL_BYTES: u64 = 256 * 1024;
 pub fn scan(under: Option<&Path>) -> Vec<ExternalSession> {
     let mut out = scan_claude(&paths::claude_projects_dir());
     out.extend(scan_codex(&paths::codex_dir()));
+    out.extend(scan_pi(&paths::pi_sessions_dir(), &paths::home().join(".pi").join("agent").join("sessions")));
     if let Some(root) = under {
         out.retain(|s| Path::new(&s.cwd).starts_with(root));
     }
@@ -240,6 +241,74 @@ fn relocated_cwds(path: &Path) -> Vec<String> {
         .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
         .filter_map(|v| v.get("relocatedCwd").and_then(Value::as_str).map(str::to_string))
         .collect()
+}
+
+/// pi conversations: orchestra's own (`~/.orchestra/pi-sessions/<id>/`,
+/// id = the directory, listed when no session state claims them — e.g.
+/// after their state was lost) and ones started with plain `pi`
+/// (`~/.pi/agent/sessions/<dir>/<file>.jsonl`, id = the file name).
+pub fn scan_pi(orchestra_dir: &Path, pi_dir: &Path) -> Vec<ExternalSession> {
+    let mut out = Vec::new();
+    for d in std::fs::read_dir(orchestra_dir).into_iter().flatten().flatten() {
+        let dir = d.path();
+        let newest = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .max_by_key(|p| mtime(p));
+        if let Some(p) = newest {
+            if let Some(mut s) = read_pi(&p) {
+                s.id = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                out.push(s);
+            }
+        }
+    }
+    for d in std::fs::read_dir(pi_dir).into_iter().flatten().flatten() {
+        for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
+            let p = f.path();
+            if p.extension().is_some_and(|x| x == "jsonl") {
+                if let Some(s) = read_pi(&p) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Title and directory of a pi session file. The title is the first real
+/// prompt (not orchestra's handoff note or a carried-over summary).
+fn read_pi(path: &Path) -> Option<ExternalSession> {
+    let head = head_lines(path, HEAD_LINES);
+    let header = head.first()?;
+    if header.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    let cwd = header.get("cwd")?.as_str()?.to_string();
+    let prompt = head.iter().skip(1).find_map(|e| {
+        let m = e.get("message")?;
+        if m.get("role").and_then(Value::as_str) != Some("user") {
+            return None;
+        }
+        let text = match m.get("content")? {
+            Value::String(t) => t.clone(),
+            Value::Array(parts) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join(" "),
+            _ => return None,
+        };
+        let t = text.trim();
+        (!t.is_empty() && !t.starts_with("[orchestra]") && !t.starts_with("This session is being continued")).then(|| t.to_string())
+    })?;
+    Some(ExternalSession {
+        backend: Backend::Pi,
+        id: path.file_stem()?.to_string_lossy().to_string(),
+        cwd,
+        title: one_line(&prompt, 80),
+        git_branch: None,
+        modified: mtime(path),
+        path: path.to_path_buf(),
+    })
 }
 
 pub fn scan_codex(codex_home: &Path) -> Vec<ExternalSession> {
@@ -464,6 +533,23 @@ mod tests {
         assert!(is_injected_block("<environment_context/>"));
         assert!(!is_injected_block("fix <b>this</b>"));
         assert!(!is_injected_block("<div> is rendered wrong\nsee it"));
+    }
+
+    #[test]
+    fn pi_sessions_from_both_places() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orch = tmp.path().join("orch");
+        let pi = tmp.path().join("pi");
+        let header = serde_json::json!({"type":"session","version":3,"id":"x","cwd":"/r"});
+        let user = |t: &str| serde_json::json!({"type":"message","message":{"role":"user","content":[{"type":"text","text":t}]}});
+        write(&orch.join("dir-id-1/a.jsonl"), &[header.clone(), user("This session is being continued from a previous conversation"), user("check the ROI monitor")]);
+        write(&pi.join("--r--/2026_s1.jsonl"), &[header.clone(), user("[orchestra] moved"), user("fix the build")]);
+        write(&pi.join("--r--/empty.jsonl"), &[header]);
+        let mut got = scan_pi(&orch, &pi);
+        got.sort_by(|a, b| a.id.cmp(&b.id));
+        let ids: Vec<(&str, &str)> = got.iter().map(|s| (s.id.as_str(), s.title.as_str())).collect();
+        assert_eq!(ids, vec![("2026_s1", "fix the build"), ("dir-id-1", "check the ROI monitor")]);
+        assert!(got.iter().all(|s| s.backend == Backend::Pi && s.cwd == "/r"));
     }
 
     #[test]

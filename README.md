@@ -113,6 +113,10 @@ shows sessions from every directory.
   before the last compaction is left out, which matches what the original agent
   itself would see.
 
+pi conversations that orchestra isn't tracking are listed the same way, under
+"pi · not in orchestra": ones started with plain `pi`, and orchestra's own if
+their session state was lost. Enter adopts them.
+
 Deleting an imported session only stops its tmux session. Its directory and
 its Claude Code or Codex transcript are left alone.
 

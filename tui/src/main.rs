@@ -323,7 +323,7 @@ impl App {
     /// Codex sessions not in orchestra yet.
     fn rows(&self) -> Vec<RowRef> {
         let mut rows: Vec<RowRef> = (0..self.sessions.len()).map(RowRef::Session).collect();
-        for backend in [Backend::Claude, Backend::Codex] {
+        for backend in [Backend::Claude, Backend::Codex, Backend::Pi] {
             let items: Vec<RowRef> = self
                 .import
                 .items
@@ -1159,6 +1159,8 @@ impl App {
             s.segments.iter().any(|seg| seg.path == path)
                 || s.external_id.as_deref() == Some(ext.id.as_str())
                 || (s.backend == ext.backend && s.backend == Backend::Claude && s.id == ext.id)
+                // orchestra's own pi conversations are keyed by session id
+                || (ext.backend == Backend::Pi && s.id == ext.id)
         })
     }
 
@@ -1166,7 +1168,11 @@ impl App {
         let base = rename::sanitize_name(&ext.title);
         let base: String = base.split('-').take(3).collect::<Vec<_>>().join("-");
         let short: String = ext.id.chars().filter(|c| c.is_ascii_hexdigit()).take(4).collect();
-        let prefix = if ext.backend == Backend::Claude { "cc" } else { "cx" };
+        let prefix = match ext.backend {
+            Backend::Claude => "cc",
+            Backend::Codex => "cx",
+            Backend::Pi => "pi",
+        };
         if base.is_empty() { format!("{prefix}-{short}") } else { format!("{prefix}-{base}-{short}") }
     }
 
@@ -1176,6 +1182,10 @@ impl App {
         let Some(ext) = self.selected_external() else {
             return;
         };
+        if ext.backend == Backend::Pi {
+            self.adopt_pi(ext);
+            return;
+        }
         if let Some(existing) = self.managing(&ext) {
             let name = existing.name.clone();
             attach_to_session(&name, &mut self.status_message);
@@ -1192,6 +1202,30 @@ impl App {
         sess.external_id = Some(ext.id.clone());
         self.start_session(sess, format!("Resumed {} session as {name}", ext.backend.as_str()), Vec::new());
         self.mode = ViewMode::Agent;
+    }
+
+    /// Adopt a pi conversation orchestra isn't tracking: one of its own
+    /// (whose state was lost — reuse its directory, the id is the key) or
+    /// one started with plain `pi` (copied into a new session directory).
+    fn adopt_pi(&mut self, ext: ExternalSession) {
+        let cwd = if std::path::Path::new(&ext.cwd).is_dir() { ext.cwd.clone() } else { self.launch_dir.to_string_lossy().to_string() };
+        let name = Self::imported_name(&ext);
+        let mut sess = Session::new(name.clone(), ext.title.clone(), cwd, Backend::Pi);
+        sess.origin = Origin::Resumed;
+        sess.title = Some(ext.title.clone());
+        let own = ext.path.starts_with(paths::pi_sessions_dir());
+        if own {
+            sess.id = ext.id.clone();
+        } else {
+            let dir = sess.pi_session_dir();
+            let copied = std::fs::create_dir_all(&dir)
+                .and_then(|_| std::fs::copy(&ext.path, dir.join(ext.path.file_name().unwrap_or_default())));
+            if let Err(e) = copied {
+                self.status_message = format!("Could not copy the pi session: {e}");
+                return;
+            }
+        }
+        self.start_session(sess, format!("Adopted pi session \"{}\" as {name}", ext.title), Vec::new());
     }
 
     /// `p` in Import View: convert the transcript into a pi session in a
@@ -2173,7 +2207,9 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
                 return false;
             }
             KeyCode::Char('f') => {
-                if matches!(app.selected_row(), Some(RowRef::External(_))) {
+                if app.selected_external().is_some_and(|e| e.backend == Backend::Pi) {
+                    app.status_message = "That is already a pi session — Enter adopts it".into();
+                } else if matches!(app.selected_row(), Some(RowRef::External(_))) {
                     app.import_fork();
                 } else {
                     app.status_message = "Ctrl+F forks a Claude Code or Codex session into pi — select one below".into();
@@ -2480,7 +2516,11 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             title: if collapsed {
                 format!("{name} · not in orchestra")
             } else {
-                format!("{name} · not in orchestra — enter adopts, ctrl+f forks into pi")
+                if backend == Backend::Pi {
+                    format!("{name} · not in orchestra — enter adopts")
+                } else {
+                    format!("{name} · not in orchestra — enter adopts, ctrl+f forks into pi")
+                }
             },
             rows: if collapsed { Vec::new() } else { ext_rows(backend) },
             collapsible: total > 0,
@@ -2492,6 +2532,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         Group::plain("Sessions", session_rows),
         external_group(Backend::Claude, "Claude Code"),
         external_group(Backend::Codex, "Codex"),
+        external_group(Backend::Pi, "pi"),
     ];
     let n_working = app.sessions.iter().filter(|s| working(s)).count();
     let n_ready = app.sessions.len() - n_working;
