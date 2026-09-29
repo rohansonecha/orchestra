@@ -586,6 +586,19 @@ bind-key -n C-c detach-client
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
+    // Mouse selection copies to your clipboard (OSC 52; allowed by most
+    // terminals, iTerm2 needs "Applications in terminal may access
+    // clipboard"). Keep the selection highlighted after release and say
+    // it was copied, instead of clearing it silently.
+    let _ = Command::new("tmux").args(["set-option", "-s", "set-clipboard", "on"]).status();
+    for table in ["copy-mode", "copy-mode-vi"] {
+        let _ = Command::new("tmux")
+            .args(["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe-no-clear", "\\;",
+                   "display-message", "Copied to your clipboard (Esc or scroll down to leave)"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     // After scrolling (tmux copy mode), Left should still mean "back to
     // orchestra", not "move the copy-mode cursor".
     let is_orch = format!("{} is-orchestra '#{{session_name}}'", sq(&orchestra_bin()));
