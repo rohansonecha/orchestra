@@ -182,6 +182,13 @@ most terminals allow; in iTerm2 turn on Settings → General → Selection →
 "Applications in terminal may access clipboard". macOS Terminal.app doesn't
 support it: there, hold Fn (or Option in iTerm2, Shift in most other
 terminals) while dragging to use the terminal's own selection and copy.
+
+In a browser terminal (code-server, VS Code in the browser), the browser
+usually blocks that clipboard write. Use the terminal's own selection
+instead: Option+drag on a Mac (with the VS Code setting
+`terminal.integrated.macOptionClickForcesSelection` on) or Shift+drag
+elsewhere; with `terminal.integrated.copyOnSelection` on, releasing the mouse
+copies it.
 pi is set up to look like Claude Code:
 
 - `pi/extensions/claude-look.ts` renders tool calls the way Claude Code does:
