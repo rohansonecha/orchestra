@@ -49,17 +49,21 @@ yet. `Tab` switches to Tree View and back.
 - `↑` / `↓` — move through the list
 - `Enter` — open the selected session, or adopt a Claude Code / Codex one
 - `←` inside a session (on an empty prompt) — come back to the list
-- `s` — switch the selected session to another agent or model (a picker, like
-  Claude Code's `/model`; number keys pick directly, typing filters)
-- `p` — fork a Claude Code / Codex session into pi
-- `←` / `→` (or `Enter`, `Space`) on the Claude Code or Codex heading —
-  collapse or expand that list; remembered across restarts
-- `a` — show Claude Code / Codex sessions from all directories
+- `Ctrl+S` — switch the selected session to another agent or model (a picker,
+  like Claude Code's `/model`; number keys pick directly, typing filters)
+- `Ctrl+F` — fork a Claude Code / Codex session into pi
 - `Ctrl+R` — rename the selected session
-- `x` twice — delete the selected session
+- `Ctrl+X` twice — delete the selected session
+- `←` / `→` (or `Enter`) on the Claude Code or Codex heading — collapse or
+  expand that list; remembered across restarts
+- `/import all` — show Claude Code / Codex sessions from all directories
 - `/` — commands, with completions above the prompt (`Tab` completes)
-- `?` — shortcuts
-- `q` (on an empty prompt) or `Ctrl+C` — quit
+- `?` on an empty prompt — shortcuts
+- `Esc` — clear the prompt; `Tab` — Tree View
+- `Ctrl+C` — quit
+
+Letters always go into the prompt; shortcuts use Ctrl, as in Claude Code's
+agents view.
 
 ### Work in parallel
 Worktrees follow the same layout Claude Code uses for `.claude/worktrees/`:
@@ -90,14 +94,14 @@ Worktrees follow the same layout Claude Code uses for `.claude/worktrees/`:
 ### Import Claude Code and Codex sessions
 The list shows your Claude Code sessions
 (`~/.claude/projects/`) and Codex sessions (`~/.codex/sessions/`) whose
-directory is inside the current repo, including their worktrees. Press `a` to
-show sessions from every directory.
+directory is inside the current repo, including their worktrees. `/import all`
+shows sessions from every directory.
 
 - `Enter` resumes the session with its own CLI (`claude --resume <id>` or
   `codex resume <id>`) in its original directory, inside an orchestra tmux
   session. A `●` marks sessions that are already open in orchestra; `Enter` on
   one of those attaches to it.
-- `p` forks the conversation into a new pi session, so you can continue it
+- `Ctrl+F` forks the conversation into a new pi session, so you can continue it
   with any model pi supports. The fork gets its own worktree, starting from the
   commit the original session is on (uncommitted edits do not carry over). Tool
   calls and their output are kept as text, capped in length, and history from

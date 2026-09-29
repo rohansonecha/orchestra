@@ -532,6 +532,16 @@ impl App {
                 self.clear_input();
                 self.open_import();
             }
+            command::DispatchCommand::ImportAll => {
+                self.clear_input();
+                self.import.all_repos = !self.import.all_repos;
+                self.rescan_import();
+                self.status_message = if self.import.all_repos {
+                    "Showing Claude Code / Codex sessions from all directories — /import all again for this repo only".into()
+                } else {
+                    "Showing Claude Code / Codex sessions in this repo".into()
+                };
+            }
             command::DispatchCommand::Theme { theme } => {
                 self.clear_input();
                 self.config.theme = Some(theme.clone());
@@ -1524,7 +1534,7 @@ impl App {
                 };
                 self.pending_delete = Some(idx);
                 self.status_message =
-                    format!("Press x again to DELETE '{}' ({what}). Any other key cancels.", s.name);
+                    format!("Press Ctrl+X again to DELETE '{}' ({what}). Any other key cancels.", s.display_title());
             }
         }
     }
@@ -2108,15 +2118,39 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
     if app.agent_view_scope.is_none() && handle_overlay_key(app, key) {
         return false;
     }
-    // Single-letter commands only apply to an empty input; otherwise they
-    // are text (a prompt containing "q" must not quit).
+    // Letters always go into the prompt (a prompt may start with any
+    // letter); shortcuts use Ctrl, like Claude Code's agents view. The one
+    // exception is `?` on an empty prompt.
     let empty = app.input.is_empty();
-    if app.agent_view_scope.is_none()
-        && key.code == KeyCode::Char('r')
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-    {
-        app.start_session_rename();
-        return false;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if app.agent_view_scope.is_none() && ctrl {
+        match key.code {
+            KeyCode::Char('r') => {
+                app.start_session_rename();
+                return false;
+            }
+            KeyCode::Char('s') => {
+                app.open_switch_picker();
+                return false;
+            }
+            KeyCode::Char('f') => {
+                if matches!(app.selected_row(), Some(RowRef::External(_))) {
+                    app.import_fork();
+                } else {
+                    app.status_message = "Ctrl+F forks a Claude Code or Codex session into pi — select one below".into();
+                }
+                return false;
+            }
+            KeyCode::Char('x') => {
+                if app.selected().is_some() {
+                    app.handle_delete_key_agent();
+                } else {
+                    app.status_message = "Select one of your sessions to delete".into();
+                }
+                return false;
+            }
+            _ => {}
+        }
     }
     if let (true, true, Some(RowRef::Group(b))) = (app.agent_view_scope.is_none(), empty, app.selected_row()) {
         match key.code {
@@ -2124,9 +2158,8 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
                 app.set_collapsed(b, true);
                 return false;
             }
-            KeyCode::Right | KeyCode::Char(' ') => {
-                let c = app.is_collapsed(b);
-                app.set_collapsed(b, if key.code == KeyCode::Right { false } else { !c });
+            KeyCode::Right => {
+                app.set_collapsed(b, false);
                 return false;
             }
             _ => {}
@@ -2136,24 +2169,6 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('?') => {
                 app.overlay = Some(Overlay::Help);
-                return false;
-            }
-            KeyCode::Char('s') => {
-                app.open_switch_picker();
-                return false;
-            }
-            KeyCode::Char('p') if matches!(app.selected_row(), Some(RowRef::External(_))) => {
-                app.import_fork();
-                return false;
-            }
-            KeyCode::Char('a') => {
-                app.import.all_repos = !app.import.all_repos;
-                app.rescan_import();
-                app.status_message = if app.import.all_repos {
-                    "Showing Claude Code / Codex sessions from all directories".into()
-                } else {
-                    "Showing Claude Code / Codex sessions in this repo".into()
-                };
                 return false;
             }
             _ => {}
@@ -2167,23 +2182,19 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
         }
         return false;
     }
-    // Any key other than `x` cancels a pending delete.
-    let is_delete_key = empty && key.code == KeyCode::Char('x');
-    if !is_delete_key {
-        app.pending_delete = None;
-    }
+    // Any key other than Ctrl+X cancels a pending delete.
+    app.pending_delete = None;
     match key.code {
-        KeyCode::Char('q') if empty => return true,
-        KeyCode::Char('i') if empty => app.open_import(),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
-        KeyCode::Tab | KeyCode::Esc => {
+        KeyCode::Char('c') if ctrl => return true,
+        // Esc clears what you typed (it used to jump to Tree View).
+        KeyCode::Esc => app.clear_input(),
+        KeyCode::Tab => {
             // Return to Tree View.
             app.mode = ViewMode::Tree;
             app.input.clear();
             app.cursor_pos = 0;
             app.input_mode = InputMode::Dispatch;
         }
-        KeyCode::Char('x') if empty && app.selected().is_some() => app.handle_delete_key_agent(),
         KeyCode::Up => app.move_up(),
         KeyCode::Down => app.move_down(),
         KeyCode::Enter => {
@@ -2421,7 +2432,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
             title: if collapsed {
                 format!("{name} · not in orchestra")
             } else {
-                format!("{name} · not in orchestra — enter adopts, p forks into pi")
+                format!("{name} · not in orchestra — enter adopts, ctrl+f forks into pi")
             },
             rows: if collapsed { Vec::new() } else { ext_rows(backend) },
             collapsible: total > 0,
@@ -2445,13 +2456,13 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         None => None,
         Some(Overlay::Help) => Some(agent_view::Overlay::Help(
             [
-                ("enter", "open / adopt"), ("s", "switch agent or model"),
-                ("p", "fork into pi"), ("x x", "delete session"),
-                ("a", "all directories"), ("ctrl+r", "rename session"),
+                ("enter", "open / adopt"), ("ctrl+s", "switch agent or model"),
+                ("ctrl+f", "fork into pi"), ("ctrl+x ×2", "delete session"),
+                ("/import all", "all directories"), ("ctrl+r", "rename session"),
                 ("← → on a group", "collapse / expand"),
                 ("/model", "default for new sessions"),
                 ("← (in session)", "back to this list"), ("tab", "complete / tree view"),
-                ("q", "quit"), ("?", "close"),
+                ("esc", "clear the prompt"), ("ctrl+c", "quit"),
             ]
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -2534,7 +2545,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
     agent_view::ViewModel {
         title,
         subtitle: format!("{n_working} working · {n_ready} ready · {place}"),
-        hint: "enter opens · ← inside a session comes back here · s switches agent/model · ? for shortcuts".into(),
+        hint: "enter opens · ← inside a session comes back here · ctrl+s switches agent/model · ? for shortcuts".into(),
         groups,
         selected: Some(app.sel.min(app.rows().len().saturating_sub(1))).filter(|_| !app.rows().is_empty()),
         input: app.input.clone(),

@@ -35,6 +35,8 @@ pub enum DispatchCommand {
     Model { model: Option<String> },
     /// `/import` — open the session importer.
     Import,
+    /// `/import all` — toggle listing sessions from every directory.
+    ImportAll,
     /// `/switch <target>` — move the selected session to another agent or
     /// model, keeping its conversation (`claude`, `codex:gpt-6`,
     /// `pi:provider/model`, or a bare pi model name).
@@ -92,6 +94,7 @@ pub fn parse(input: &str) -> DispatchCommand {
         "model" => DispatchCommand::Model {
             model: (!rest.is_empty()).then(|| rest.to_string()),
         },
+        "import" if rest == "all" => DispatchCommand::ImportAll,
         "import" => DispatchCommand::Import,
         "theme" => match rest {
             "light" | "dark" => DispatchCommand::Theme { theme: rest.to_string() },
