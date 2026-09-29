@@ -588,13 +588,13 @@ bind-key -n C-c detach-client
         .status()?;
     // Mouse selection copies to your clipboard (OSC 52; allowed by most
     // terminals, iTerm2 needs "Applications in terminal may access
-    // clipboard"). Keep the selection highlighted after release and say
-    // it was copied, instead of clearing it silently.
+    // clipboard"). On release: copy, clear the highlight (a kept one
+    // lingers while scrolling), stay at the scrolled position, and say so.
     let _ = Command::new("tmux").args(["set-option", "-s", "set-clipboard", "on"]).status();
     for table in ["copy-mode", "copy-mode-vi"] {
         let _ = Command::new("tmux")
-            .args(["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe-no-clear", "\\;",
-                   "display-message", "Copied to your clipboard (Esc or scroll down to leave)"])
+            .args(["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X", "copy-pipe", "\\;",
+                   "display-message", "Copied to your clipboard"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

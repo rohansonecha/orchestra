@@ -170,9 +170,8 @@ request:
 Attached sessions look like the agent alone: no tmux status bar, and the
 mouse wheel scrolls the conversation (Left, or scrolling back down, returns).
 
-To copy text from a session, drag over it with the mouse: it stays
-highlighted, "Copied to your clipboard" appears, and the text is on your
-clipboard. This goes through the terminal's clipboard support (OSC 52), which
+To copy text from a session, drag over it with the mouse: when you release,
+"Copied to your clipboard" appears and the text is on your clipboard. This goes through the terminal's clipboard support (OSC 52), which
 most terminals allow; in iTerm2 turn on Settings → General → Selection →
 "Applications in terminal may access clipboard". macOS Terminal.app doesn't
 support it: there, hold Fn (or Option in iTerm2, Shift in most other
