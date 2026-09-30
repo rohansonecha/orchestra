@@ -245,6 +245,8 @@ struct App {
     switch_rx: std::sync::mpsc::Receiver<SwitchDone>,
     /// Sessions being switched → what they are switching to.
     switching: HashMap<String, String>,
+    /// When each running session was last in use (open, working, looping).
+    last_used: HashMap<String, Instant>,
 }
 
 impl App {
@@ -292,6 +294,7 @@ impl App {
             switch_tx,
             switch_rx,
             switching: HashMap::new(),
+            last_used: HashMap::new(),
         };
         app.rescan_import();
         agent_view::set_light(app.config.light());
@@ -470,11 +473,16 @@ impl App {
                 None => (None, None),
             };
             let looping = commands::loop_running(&name);
+            let attached = tmux_attached(&name);
+            if working || looping || attached || self.switching.contains_key(&name) || !self.last_used.contains_key(&name) {
+                self.last_used.insert(name.clone(), Instant::now());
+            }
             self.activity.insert(name, Activity { working, looping, summary, last_active });
         }
         if self.import.scanned.is_none_or(|t| t.elapsed().as_secs() >= 15) {
             self.rescan_import();
         }
+        self.suspend_idle();
     }
 
     fn dispatch_new(&mut self) {
@@ -688,6 +696,14 @@ impl App {
                 let (title, body) = commands::bug_draft(args, sel, "");
                 self.overlay = Some(Overlay::Bug { title, body });
             }
+            "suspend" => {
+                let Some(i) = need(self) else { return };
+                if commands::loop_running(&self.sessions[i].name) {
+                    commands::stop_loop(&self.sessions[i].name);
+                }
+                let msg = self.suspend_session(i);
+                self.status_message = format!("{msg} — its conversation is kept; Enter resumes it");
+            }
             "teleport" => {
                 let Some(i) = need(self) else { return };
                 if args.trim() == "back" {
@@ -893,6 +909,40 @@ impl App {
 
     /// Move session `idx` to `target`, keeping its conversation, and
     /// restart its tmux session on the new agent.
+    /// Stop sessions nobody is using (see Config::suspend_after): not open,
+    /// not working, no /loop, local, and no conversation writes for that
+    /// long. Their agent process ends; the conversation is kept and Enter
+    /// resumes it.
+    fn suspend_idle(&mut self) {
+        let Some(after) = self.config.suspend_after() else { return };
+        let now = tree_store::unix_now();
+        let idle: Vec<usize> = (0..self.sessions.len())
+            .filter(|&i| {
+                let s = &self.sessions[i];
+                let recent_write = self.activity.get(&s.name).and_then(|a| a.last_active).is_some_and(|t| now.saturating_sub(t) < after.as_secs());
+                matches!(s.state, SessionState::Working | SessionState::Idle | SessionState::NeedsInput)
+                    && s.remote.is_none()
+                    && !recent_write
+                    && self.last_used.get(&s.name).is_some_and(|t| t.elapsed() >= after)
+            })
+            .collect();
+        for i in idle {
+            let msg = self.suspend_session(i);
+            self.status_message = format!("{msg} after {} idle minutes — Enter resumes it", after.as_secs() / 60);
+        }
+    }
+
+    /// Stop a session's agent to free its memory and CPU. It stays listed
+    /// as Stopped; Enter resumes the same conversation.
+    fn suspend_session(&mut self, idx: usize) -> String {
+        let s = &mut self.sessions[idx];
+        let _ = Command::new("tmux").args(["kill-session", "-t", &s.name]).status();
+        let _ = std::fs::remove_file(paths::sessions_dir().join(format!("{}.ready", s.name)));
+        s.state = SessionState::Completed;
+        self.last_used.remove(&s.name);
+        format!("Suspended {}", s.display_title())
+    }
+
     /// Bring a stopped session back: start its agent again on its own
     /// transcript (pi --continue, claude --resume, codex resume), in its
     /// directory, under the same name.
@@ -1779,6 +1829,15 @@ fn fmt_secs(s: u64) -> String {
     }
 }
 
+/// Whether a tmux session is open in some terminal right now.
+fn tmux_attached(name: &str) -> bool {
+    Command::new("tmux")
+        .args(["display-message", "-p", "-t", name, "#{session_attached}"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() != "0")
+        .unwrap_or(true)
+}
+
 /// "~/x" for paths under $HOME.
 fn tilde(p: &std::path::Path) -> String {
     let home = paths::home();
@@ -1808,6 +1867,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/background", "<prompt> — start a session without opening it"),
     ("/bug", "<what went wrong> — draft a GitHub issue for orchestra"),
     ("/theme", "<light|dark> — colors for orchestra and new pi sessions"),
+    ("/suspend", "stop the selected session's agent to free memory; Enter resumes it"),
     ("/teleport", "[infra] — move the selected session to a SkyPilot box; /teleport back"),
     ("/rename", "<name> — rename the selected session"),
     ("/agent", "<name> — spawn a sub-agent"),

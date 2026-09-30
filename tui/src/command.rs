@@ -101,7 +101,7 @@ pub fn parse(input: &str) -> DispatchCommand {
             _ => DispatchCommand::Unknown { raw: trimmed.to_string() },
         },
         "code-review" | "simplify" | "autofix-pr" | "loop" | "background" | "branch" | "btw" | "recap" | "bug"
-        | "teleport" => DispatchCommand::Session { name: cmd.to_string(), args: rest.to_string() },
+        | "teleport" | "suspend" => DispatchCommand::Session { name: cmd.to_string(), args: rest.to_string() },
         // No target: open the picker.
         "switch" => DispatchCommand::Switch { target: rest.to_string() },
         _ => DispatchCommand::Unknown { raw: trimmed.to_string() },

@@ -215,6 +215,15 @@ pi is set up to look like Claude Code:
 `install.sh` installs all of this. `/theme` switches orchestra and pi
 together; a running pi session picks changes up with `/reload`.
 
+### Idle sessions are stopped to save resources
+A session you haven't used for 30 minutes (not open, not working, no `/loop`,
+nothing written to its conversation) is stopped: its agent process exits and
+frees its memory and CPU, and the session stays in the list as Stopped. Enter
+resumes it. `/suspend` stops the selected session right away. Change the
+limit with `"suspend_after_minutes"` in `~/.orchestra/config.json` (`0` turns
+it off). Claude Code's own background sessions are managed by Claude Code and
+are not stopped by orchestra.
+
 ### Stopped sessions
 If a session's tmux session is gone (tmux restarted, the machine rebooted),
 it stays in the list as **Stopped**. Enter resumes it: its agent starts again

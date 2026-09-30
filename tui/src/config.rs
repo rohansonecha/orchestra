@@ -24,6 +24,11 @@ pub struct Config {
     /// Folded groups in the list ("claude", "codex").
     #[serde(default)]
     pub collapsed: Vec<String>,
+    /// Stop sessions after this many idle minutes (not open, not working,
+    /// no conversation writes); they stay listed and resume on Enter.
+    /// Unset means 30; 0 turns it off.
+    #[serde(default)]
+    pub suspend_after_minutes: Option<u64>,
 }
 
 impl Config {
@@ -38,6 +43,14 @@ impl Config {
         let _ = std::fs::create_dir_all(paths::state_dir());
         if let Ok(s) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(paths::config_file(), s);
+        }
+    }
+
+    pub fn suspend_after(&self) -> Option<std::time::Duration> {
+        match self.suspend_after_minutes {
+            Some(0) => None,
+            Some(m) => Some(std::time::Duration::from_secs(m * 60)),
+            None => Some(std::time::Duration::from_secs(30 * 60)),
         }
     }
 
