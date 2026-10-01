@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# install.sh — Install orchestra (TUI + pi + OpenClaw + SkyPilot CLI).
+# install.sh — Install orchestra, an agent orchestration platform for Claude Code,
+# Codex and pi (TUI + pi + pi look + OpenClaw + SkyPilot CLI).
 #
 # One-liner (public repo):
 #   curl -fsSL https://raw.githubusercontent.com/rohansonecha/orchestra/main/install.sh | bash

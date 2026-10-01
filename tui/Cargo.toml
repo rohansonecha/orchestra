@@ -2,7 +2,7 @@
 name = "orchestra"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal UI for managing parallel pi coding agent sessions with worktree isolation"
+description = "Agent orchestration platform: run Claude Code, Codex and pi sessions in parallel worktrees and move work between them"
 
 [[bin]]
 name = "orchestra"
