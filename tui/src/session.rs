@@ -592,6 +592,7 @@ set -g default-terminal \"screen-256color\"
 set -ga terminal-overrides \",*256col*:Tc\"
 set -g extended-keys on
 set -g extended-keys-format csi-u
+set -as terminal-features \",*:hyperlinks\"
 set -g remain-on-exit on
 # In orchestra sessions, Left detaches back to orchestra when the cursor is
 # at the start of the agent's input; otherwise it goes to the agent.
@@ -656,6 +657,20 @@ pub fn apply_tmux_setup(left_check: &str) {
     // Modified keys (Shift+Enter, Shift+Tab, ...) reach the agents in the
     // CSI u encoding pi and Claude Code expect; tmux's default (xterm)
     // makes pi warn at startup. The format option is tmux 3.5+.
+    // Agents print links as OSC 8 hyperlinks (text like "PR #5" that
+    // points at a URL). tmux passes them to the terminal only if it is
+    // told the terminal supports them; otherwise Cmd+click does nothing.
+    let has_hyperlinks = Command::new("tmux")
+        .args(["show-options", "-sv", "terminal-features"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == "*:hyperlinks"));
+    if !has_hyperlinks {
+        let _ = Command::new("tmux")
+            .args(["set-option", "-as", "terminal-features", ",*:hyperlinks"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     let _ = Command::new("tmux").args(["set-option", "-s", "extended-keys", "on"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     if tmux_server_version().is_some_and(|v| v >= (3, 5)) {
         let _ = Command::new("tmux")

@@ -189,6 +189,7 @@ A session is stopped after 30 minutes when it is not open, not working, has no `
 ### Look and feel
 
 - Sessions look like the agent on its own: no tmux status bar, the mouse wheel scrolls the conversation, a click returns to the prompt, and typing after scrolling jumps back to the prompt. With tmux 3.6 or newer, copy mode's position counter and cursor are hidden too.
+- Links open with Cmd+click (Ctrl+click on Linux and Windows), including links the agent shows as text such as "PR #5", which tmux passes on as terminal hyperlinks.
 - pi is set up to look like Claude Code. `pi/extensions/claude-look.ts` draws tool calls as `● Bash(command)` with a status-colored dot and gray, collapsed output under `⎿`. The `orchestra-light` and `orchestra-dark` themes use Claude Code's palettes, reasoning is hidden, and the startup notices are off. `install.sh` installs all of this, `/theme` switches orchestra and pi together, and a running pi session picks changes up with `/reload`.
 - **Copying text:** drag over it with the mouse. On release it is sent to your clipboard through the terminal's clipboard support (OSC 52). iTerm2 needs Settings → General → Selection → "Applications in terminal may access clipboard". macOS Terminal.app and browser terminals such as code-server usually block it. There, use the terminal's own selection instead: Option+drag on a Mac (in VS Code, with `terminal.integrated.macOptionClickForcesSelection` on) or Shift+drag elsewhere, and turn on `terminal.integrated.copyOnSelection` to copy on release.
 
