@@ -186,6 +186,10 @@ pub(crate) fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
                 app.open_switch_picker();
                 return false;
             }
+            KeyCode::Char('p') => {
+                app.toggle_pin();
+                return false;
+            }
             KeyCode::Char('f') => {
                 if app.selected_external().is_some_and(|e| e.backend == Backend::Pi) {
                     app.status_message = "That is already a pi session — Enter adopts it".into();

@@ -268,15 +268,25 @@ impl App {
 
     /// Rows of the main list: orchestra sessions, then Claude Code and
     /// Codex sessions not in orchestra yet.
+    /// Pinned rows come first, then orchestra sessions, then each outside
+    /// group.
     pub(crate) fn rows(&self) -> Vec<RowRef> {
-        let mut rows: Vec<RowRef> = (0..self.sessions.len()).map(RowRef::Session).collect();
+        let outside = |e: &ExternalSession| self.managing(e).is_none();
+        let mut rows: Vec<RowRef> = (0..self.sessions.len())
+            .filter(|&i| self.session_pinned(&self.sessions[i]))
+            .map(RowRef::Session)
+            .collect();
+        rows.extend(
+            self.import.items.iter().enumerate().filter(|(_, e)| outside(e) && self.external_pinned(e)).map(|(i, _)| RowRef::External(i)),
+        );
+        rows.extend((0..self.sessions.len()).filter(|&i| !self.session_pinned(&self.sessions[i])).map(RowRef::Session));
         for backend in [Backend::Claude, Backend::Codex, Backend::Pi] {
             let items: Vec<RowRef> = self
                 .import
                 .items
                 .iter()
                 .enumerate()
-                .filter(|(_, e)| e.backend == backend && self.managing(e).is_none())
+                .filter(|(_, e)| e.backend == backend && outside(e) && !self.external_pinned(e))
                 .map(|(i, _)| RowRef::External(i))
                 .collect();
             if items.is_empty() {
@@ -288,6 +298,51 @@ impl App {
             }
         }
         rows
+    }
+
+    fn pin_keys(s: &Session) -> Vec<String> {
+        let mut keys = vec![format!("session:{}", s.id)];
+        if let Some(ext) = &s.external_id {
+            keys.push(format!("{}:{ext}", s.backend.as_str()));
+        }
+        keys
+    }
+
+    pub(crate) fn session_pinned(&self, s: &Session) -> bool {
+        Self::pin_keys(s).iter().any(|k| self.config.pinned.contains(k))
+    }
+
+    pub(crate) fn external_pinned(&self, e: &ExternalSession) -> bool {
+        self.config.pinned.contains(&format!("{}:{}", e.backend.as_str(), e.id))
+    }
+
+    /// Ctrl+P: pin the selected session to the top group, or unpin it.
+    pub(crate) fn toggle_pin(&mut self) {
+        let Some(row) = self.selected_row() else { return };
+        let (keys, pinned, title) = match row {
+            RowRef::Session(i) => {
+                let s = &self.sessions[i];
+                (Self::pin_keys(s), self.session_pinned(s), s.display_title())
+            }
+            RowRef::External(i) => {
+                let e = &self.import.items[i];
+                (vec![format!("{}:{}", e.backend.as_str(), e.id)], self.external_pinned(e), e.title.clone())
+            }
+            RowRef::Group(_) => {
+                self.status_message = "Select a session to pin".into();
+                return;
+            }
+        };
+        self.config.pinned.retain(|k| !keys.contains(k));
+        if !pinned {
+            self.config.pinned.push(keys[0].clone());
+        }
+        self.config.save();
+        // Follow the row to its new place.
+        if let Some(p) = self.rows().iter().position(|r| *r == row) {
+            self.sel = p;
+        }
+        self.status_message = if pinned { format!("Unpinned {title}") } else { format!("Pinned {title} — ctrl+p again unpins") };
     }
 
     pub(crate) fn is_collapsed(&self, b: Backend) -> bool {

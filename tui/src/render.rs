@@ -1,6 +1,7 @@
 // render.rs — drawing: the Agent View list, Tree View, overlays and the
 // footer, plus view_model(), which turns App state into what gets drawn.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ratatui::layout::Rect;
@@ -11,7 +12,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::agent_view;
 use crate::app::*;
 use crate::commands;
-use crate::import;
+use crate::import::{self, ExternalSession};
 use crate::teleport;
 use crate::switch;
 use crate::tree_store;
@@ -54,10 +55,7 @@ pub(crate) fn ui_tree(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
     use agent_view::{Group, Row, Status};
     let working = |s: &Session| app.activity.get(&s.name).is_some_and(|a| a.working);
-    let session_rows: Vec<Row> = app
-        .sessions
-        .iter()
-        .map(|s| {
+    let session_row = |s: &Session| -> Row {
             let act = app.activity.get(&s.name);
             let switching = app.switching.get(&s.name);
             let status = if s.state == SessionState::Completed || s.state == SessionState::Failed {
@@ -91,17 +89,9 @@ pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
                 },
                 age: ago(act.and_then(|a| a.last_active).unwrap_or(s.created_at)),
             }
-        })
-        .collect();
+    };
     let root = app.repo.as_ref().map(|r| r.root.clone());
-    let ext_rows = |backend: Backend| -> Vec<Row> {
-        app.rows()
-            .into_iter()
-            .filter_map(|r| match r {
-                RowRef::External(i) if app.import.items[i].backend == backend => Some(&app.import.items[i]),
-                _ => None,
-            })
-            .map(|e| {
+    let ext_row = |e: &ExternalSession, pinned: bool| -> Row {
                 // Worktree sessions: just the worktree's name.
                 let short = |c: &str| -> Option<String> {
                     let (_, rest) = c.split_once("/.claude/worktrees/").or_else(|| c.split_once("/.orchestra/worktrees/"))?;
@@ -119,18 +109,38 @@ pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
                     name: e.title.clone(),
                     label: None,
                     summary: app.summaries.get(&e.path).and_then(|(_, s)| s.clone()).unwrap_or_default(),
-                    meta: dir,
+                    // In the pinned group, say which agent it belongs to.
+                    meta: if pinned { format!("{} · {dir}", backend_name(e.backend)) } else { dir },
                     age: ago(e.modified),
                 }
-            })
-            .collect()
     };
-    let external_group = |backend: Backend, name: &str| {
+    // Place each row in its group, in the order rows() gives (selection
+    // indexes follow it).
+    let (mut pinned_rows, mut session_rows) = (Vec::new(), Vec::new());
+    let mut ext_rows: HashMap<Backend, Vec<Row>> = HashMap::new();
+    for r in app.rows() {
+        match r {
+            RowRef::Session(i) => {
+                let s = &app.sessions[i];
+                if app.session_pinned(s) { pinned_rows.push(session_row(s)) } else { session_rows.push(session_row(s)) }
+            }
+            RowRef::External(i) => {
+                let e = &app.import.items[i];
+                if app.external_pinned(e) {
+                    pinned_rows.push(ext_row(e, true));
+                } else {
+                    ext_rows.entry(e.backend).or_default().push(ext_row(e, false));
+                }
+            }
+            RowRef::Group(_) => {}
+        }
+    }
+    let mut external_group = |backend: Backend, name: &str| {
         let total = app
             .import
             .items
             .iter()
-            .filter(|e| e.backend == backend && app.managing(e).is_none())
+            .filter(|e| e.backend == backend && app.managing(e).is_none() && !app.external_pinned(e))
             .count();
         let collapsed = app.is_collapsed(backend);
         Group {
@@ -143,13 +153,14 @@ pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
                     format!("{name} · not in orchestra — enter adopts, ctrl+f forks into pi")
                 }
             },
-            rows: if collapsed { Vec::new() } else { ext_rows(backend) },
+            rows: if collapsed { Vec::new() } else { ext_rows.remove(&backend).unwrap_or_default() },
             collapsible: total > 0,
             collapsed,
             hidden: if collapsed { total } else { 0 },
         }
     };
     let groups = vec![
+        Group::plain("Pinned", pinned_rows),
         Group::plain("Sessions", session_rows),
         external_group(Backend::Claude, "Claude Code"),
         external_group(Backend::Codex, "Codex"),
@@ -171,6 +182,7 @@ pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
                 ("enter", "open / adopt"), ("ctrl+s", "switch agent or model"),
                 ("ctrl+f", "fork into pi"), ("ctrl+x ×2", "delete session"),
                 ("/import all", "all directories"), ("ctrl+r", "rename session"),
+                ("ctrl+p", "pin / unpin"),
                 ("← → on a group", "collapse / expand"),
                 ("/model", "default for new sessions"),
                 ("← (in session)", "back to this list"), ("tab", "complete / tree view"),
@@ -425,4 +437,12 @@ pub(crate) fn render_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let cursor_x = area.x + 1 + app.cursor_pos as u16;
     let cursor_y = area.y + 1;
     f.set_cursor_position((cursor_x, cursor_y));
+}
+
+fn backend_name(b: Backend) -> &'static str {
+    match b {
+        Backend::Claude => "Claude Code",
+        Backend::Codex => "Codex",
+        Backend::Pi => "pi",
+    }
 }

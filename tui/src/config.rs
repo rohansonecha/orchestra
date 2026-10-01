@@ -29,6 +29,11 @@ pub struct Config {
     /// Unset means 30; 0 turns it off.
     #[serde(default)]
     pub suspend_after_minutes: Option<u64>,
+    /// Pinned rows, shown in their own group at the top: `session:<id>`
+    /// for orchestra sessions, `<backend>:<id>` for outside ones (which
+    /// stays pinned once adopted, since the session keeps that id).
+    #[serde(default)]
+    pub pinned: Vec<String>,
 }
 
 impl Config {

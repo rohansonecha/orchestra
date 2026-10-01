@@ -92,6 +92,7 @@ Pick one (number keys work, and typing filters the list). The row shows **Switch
 
 - `/branch` forks a session into a new one: a copy of its conversation, and a new worktree with its uncommitted work, so you can try another approach.
 - `/loop 10m check CI and fix failures` resends a prompt whenever the session is idle; `/loop stop` ends it.
+- Ctrl+P pins a session, yours or one from outside orchestra, to a Pinned group at the top of the list; Ctrl+P again unpins it. An outside session stays pinned after you adopt it.
 - Ctrl+R renames a session. Ctrl+X twice deletes it along with its worktree and branch; you are told first if it has uncommitted work.
 - Sessions you haven't used for 30 minutes are stopped to free memory and CPU. They stay in the list as **Stopped**, and Enter resumes them where they left off.
 
@@ -124,6 +125,7 @@ Each session runs one agent through that agent's own CLI (`pi`, `claude` or `cod
 | ← (inside a session, on an empty prompt) | Back to the list |
 | Ctrl+S | Switch the selected session to another agent or model |
 | Ctrl+F | Fork a Claude Code or Codex session into pi |
+| Ctrl+P | Pin the selected session to the Pinned group at the top, or unpin it |
 | Ctrl+R | Rename the selected session |
 | Ctrl+X twice | Delete the selected session |
 | ← / → on a group heading | Collapse or expand the group (remembered) |

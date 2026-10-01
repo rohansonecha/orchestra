@@ -21,7 +21,7 @@ pub enum SessionState {
 }
 
 /// Which agent CLI runs in the session's tmux pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
     #[default]
