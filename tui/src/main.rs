@@ -67,6 +67,7 @@ mod agent_view;
 mod command;
 mod commands;
 mod config;
+mod coverage;
 mod history;
 mod import;
 mod line_edit;
@@ -1977,6 +1978,10 @@ fn main() -> anyhow::Result<()> {
             "rename" => return rename_cli(),
             "claude-open" => return claude_open_cli(),
             "codex-open" => return codex_open_cli(),
+            "tool-coverage" => {
+                coverage::run();
+                return Ok(());
+            }
             "tmux-setup" => {
                 session::tmux_setup_now();
                 println!("orchestra tmux settings applied");
