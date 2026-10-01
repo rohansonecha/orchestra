@@ -221,7 +221,7 @@ orchestra runs anywhere you have a terminal. To keep sessions running on a remot
 2. Store these secrets on your SkyPilot API server: `ORCHESTRA_API_KEY`, `SKY_API_ENDPOINT`, `ORCHESTRA_SKY_API_TOKEN`, `GIT_EMAIL`, `GIT_NAME`, `GITHUB_TOKEN` and `LINEAR_TOKEN`.
 3. Set `SKY_INFRA`, `SKY_API_ENDPOINT` and `ORCHESTRA_SKY_API_TOKEN` in `private/env`.
 4. Launch it: `source private/env && sky launch --infra "$SKY_INFRA" -c main-box skypilot/main-box.yaml`
-5. Connect and run it: `sky ssh main-box`, then `orchestra`. The box sets `ORCHESTRA_WORK_REPO`, so sessions get worktrees in its work repo.
+5. Connect and run it: `ssh main-box`, then `orchestra`. The box sets `ORCHESTRA_WORK_REPO`, so sessions get worktrees in its work repo.
 
 `/teleport` moves a single session to its own SkyPilot cluster and back. Before launching, it always shows the API server, the cluster and everything it will send. It passes secrets by name only, and it can use its own API server (`SKY_API_ENDPOINT` with `ORCHESTRA_SKY_API_TOKEN` or `ORCHESTRA_SKY_TOKEN_FILE` in `~/.orchestra/env`) without touching `~/.sky/config.yaml`. It is experimental: the plan and the task file are tested, but a real launch is not yet.
 
