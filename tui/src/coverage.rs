@@ -1,4 +1,4 @@
-// coverage.rs — `orchestra tool-coverage`: how many tool calls a switch
+// coverage.rs — `orchestra roi`: how many tool calls a switch
 // between agents carries over as real tool calls (mapped to the target's
 // own shell/read/write/edit tools) versus text describing the call.
 //

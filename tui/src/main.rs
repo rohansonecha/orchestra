@@ -1978,7 +1978,7 @@ fn main() -> anyhow::Result<()> {
             "rename" => return rename_cli(),
             "claude-open" => return claude_open_cli(),
             "codex-open" => return codex_open_cli(),
-            "tool-coverage" => {
+            "roi" => {
                 coverage::run();
                 return Ok(());
             }

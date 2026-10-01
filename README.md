@@ -148,7 +148,7 @@ agent's own session file and resumes it there:
 See [docs/switching-agents.md](docs/switching-agents.md) for why moving tool
 calls between agents is hard and how each problem is handled.
 
-`orchestra tool-coverage` measures it on your own transcripts: the share of
+`orchestra roi` measures it on your own transcripts: the share of
 tool calls a switch keeps as real tool calls, by week and by agent, what was
 carried in each switch your sessions have made, and the most common calls
 that fall back to text.
