@@ -164,7 +164,7 @@ pub fn run() {
     }
 
     println!("\nTool calls a switch would keep as real tool calls (vs. text), by week");
-    println!("{:<12} {:>8} {:>8} {:>8}   {}", "week of", "calls", "kept", "share", "by agent");
+    println!("{:<12} {:>8} {:>8} {:>8}   by agent", "week of", "calls", "kept", "share");
     for (week, agents) in &by_week {
         let mut t = Count::default();
         for c in agents.values() {
@@ -216,7 +216,7 @@ pub fn run() {
     }
 
     let mut top: Vec<(String, u64)> = unmapped.into_iter().collect();
-    top.sort_by(|a, b| b.1.cmp(&a.1));
+    top.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     println!("\nMost common tool calls kept as text (candidates to map next)");
     for (name, n) in top.into_iter().take(12) {
         println!("  {:>7}  {name}", n);

@@ -48,7 +48,7 @@ pub fn scan(under: Option<&Path>) -> Vec<ExternalSession> {
     if let Some(root) = under {
         out.retain(|s| Path::new(&s.cwd).starts_with(root));
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by_key(|s| std::cmp::Reverse(s.modified));
     out
 }
 

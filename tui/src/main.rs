@@ -501,7 +501,6 @@ impl App {
                 );
                 self.input.clear();
                 self.cursor_pos = 0;
-                return;
             }
             command::DispatchCommand::Rename { new_name } if self.mode == ViewMode::Agent => {
                 self.clear_input();
@@ -509,20 +508,17 @@ impl App {
                     Some(i) => self.set_title(i, &new_name),
                     None => "Select a session to rename".into(),
                 };
-                return;
             }
             command::DispatchCommand::Rename { new_name } => {
                 self.status_message = self.rename_selected(&new_name);
                 self.reload_tree();
                 self.input.clear();
                 self.cursor_pos = 0;
-                return;
             }
             command::DispatchCommand::Unknown { raw } => {
                 self.status_message = format!("Unknown command: {raw}");
                 self.input.clear();
                 self.cursor_pos = 0;
-                return;
             }
             command::DispatchCommand::DispatchWith { backend, text } => {
                 self.dispatch_session(&text, backend);
@@ -2306,12 +2302,9 @@ fn handle_agent_key(app: &mut App, key: event::KeyEvent) -> bool {
         }
     }
     if app.agent_view_scope.is_none() && empty {
-        match key.code {
-            KeyCode::Char('?') => {
-                app.overlay = Some(Overlay::Help);
-                return false;
-            }
-            _ => {}
+        if let KeyCode::Char('?') = key.code {
+            app.overlay = Some(Overlay::Help);
+            return false;
         }
     }
     // Tab completes a slash command while typing one.
@@ -2701,7 +2694,7 @@ fn view_model(app: &App) -> agent_view::ViewModel {
         subtitle: format!("{n_working} working · {n_ready} ready · {place}"),
         hint: "enter opens · ← inside a session comes back here · ctrl+s switches agent/model · ? for shortcuts".into(),
         groups,
-        selected: Some(app.sel.min(app.rows().len().saturating_sub(1))).filter(|_| !app.rows().is_empty()),
+        selected: (!app.rows().is_empty()).then_some(app.sel.min(app.rows().len().saturating_sub(1))),
         input: app.input.replace('\n', "↵"),
         cursor: app.cursor_pos,
         placeholder: if renaming { "new name".into() } else { "describe a task for a new session".into() },

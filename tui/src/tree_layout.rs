@@ -358,7 +358,7 @@ mod tests {
         // Leaves a, b are at distinct rows.
         assert_ne!(ar, br);
         // All within bounds.
-        for (_, &(_, row)) in &screen.cells {
+        for &(_, row) in screen.cells.values() {
             assert!(row < 24);
         }
     }
