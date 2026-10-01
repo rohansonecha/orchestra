@@ -19,9 +19,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Default store location. Overridable via `TreeStore::open` for tests.
-pub const DEFAULT_STORE_DIR: &str = "/home/sky/.orchestra/tree";
-
 /// A node is stale if no successful collector pull has landed in this long.
 /// 90s = 3 missed 30s pulls (Design §10).
 pub const STALE_THRESHOLD_SECS: u64 = 90;
@@ -208,7 +205,7 @@ impl TreeStore {
     /// Open the default store at `~/.orchestra/tree/`.
     pub fn default_dir() -> Self {
         Self {
-            dir: PathBuf::from(DEFAULT_STORE_DIR),
+            dir: crate::paths::tree_store_dir(),
         }
     }
 
@@ -223,11 +220,16 @@ impl TreeStore {
         &self.dir
     }
     /// Load `index.json`. Returns `None` if the store doesn't exist yet
-    /// (fresh main-box with no collector run).
+    /// (fresh main-box with no collector run), or if it was written by a
+    /// different schema version than this build understands — a newer
+    /// format could be misread, and an older one is stale. Rather than
+    /// risk corrupting the store, the TUI falls back to its synthesized
+    /// tree (see main.rs).
     pub fn load_index(&self) -> Option<Index> {
         let path = self.dir.join("index.json");
         let content = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
+        let index: Index = serde_json::from_str(&content).ok()?;
+        (index.version == SCHEMA_VERSION).then_some(index)
     }
 
     /// Load a single node by id. Returns `None` if missing or unparseable.
@@ -450,6 +452,22 @@ mod tests {
         assert!(tree.has_root());
         assert_eq!(tree.nodes.len(), 3);
         assert!(tree.get("agent-research-box").is_some());
+    }
+
+    #[test]
+    fn index_from_a_different_schema_is_rejected() {
+        let (store, dir) = store_with(&[agent("agent-main-box", None, &[])], "agent-main-box");
+        // Rewrite the index as if a newer collector had written it.
+        let index = Index {
+            root_id: "agent-main-box".to_string(),
+            version: SCHEMA_VERSION + 1,
+            updated_at: unix_now(),
+        };
+        fs::write(dir.path().join("index.json"), serde_json::to_string_pretty(&index).unwrap()).unwrap();
+        assert!(store.load_index().is_none());
+        // The TUI degrades to its synthesized tree instead of misreading it.
+        let tree = store.load_tree();
+        assert!(!tree.has_root());
     }
 
     #[test]

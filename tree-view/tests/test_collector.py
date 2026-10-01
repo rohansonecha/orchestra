@@ -240,5 +240,28 @@ class StoreIOTest(unittest.TestCase):
             self.assertIsNone(coll.load_node(td, "bad"))
 
 
+class SchemaGuardTest(unittest.TestCase):
+    """A store from a newer schema must never be written to."""
+
+    def test_newer_schema_store_is_not_touched(self):
+        with tempfile.TemporaryDirectory() as td:
+            coll.write_index(td, coll.ROOT_AGENT_ID, 123)
+            idx = coll.load_index(td)
+            idx["version"] = coll.SCHEMA_VERSION + 1
+            (Path(td) / "index.json").write_text(json.dumps(idx))
+
+            logs = coll.Collector(store_dir=td).run_once()
+            self.assertTrue(any("newer" in line for line in logs), logs)
+            # Nothing was seeded or rewritten.
+            self.assertEqual(coll.load_all_node_ids(td), [])
+            self.assertEqual(coll.load_index(td)["version"], coll.SCHEMA_VERSION + 1)
+
+    def test_missing_version_is_treated_as_absent(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertIsNone(coll.store_schema_version(td))
+            coll.write_index(td, coll.ROOT_AGENT_ID, 123)
+            self.assertEqual(coll.store_schema_version(td), coll.SCHEMA_VERSION)
+
+
 if __name__ == "__main__":
     unittest.main()

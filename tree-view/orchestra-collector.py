@@ -70,6 +70,20 @@ def load_index(store_dir: str) -> dict[str, Any] | None:
         return None
 
 
+def store_schema_version(store_dir: str) -> int | None:
+    """Schema version recorded in the store's index.json, if any.
+
+    The Rust TUI (tree_store.rs) mirrors these constants by hand, so a
+    version mismatch means this collector and the store were built from
+    different orchestra versions. Never write over such a store.
+    """
+    idx = load_index(store_dir)
+    if idx is None:
+        return None
+    v = idx.get("version")
+    return v if isinstance(v, int) else None
+
+
 def load_node(store_dir: str, node_id: str) -> dict[str, Any] | None:
     p = store_path(store_dir, "nodes", f"{node_id}.json")
     if not p.exists():
@@ -420,6 +434,11 @@ class Collector:
 
     def pull_cycle(self) -> list[str]:
         """One pull cycle: scrape local + pull bridges + maybe reconcile sky."""
+        # Refuse to write over a store from a newer schema (an upgraded TUI
+        # or collector); see store_schema_version.
+        version = store_schema_version(self.store_dir)
+        if version is not None and version > SCHEMA_VERSION:
+            return [f"store schema v{version} is newer than this collector's v{SCHEMA_VERSION}; not writing"]
         logs: list[str] = []
         # 1. Local scrape (main-box).
         tmux = scrape_tmux_sessions()
@@ -581,6 +600,15 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--once", action="store_true", help="one pull cycle then exit")
     args = ap.parse_args()
+
+    version = store_schema_version(args.store_dir)
+    if version is not None and version > SCHEMA_VERSION:
+        print(
+            f"store at {args.store_dir} uses schema v{version}, but this collector "
+            f"understands v{SCHEMA_VERSION}; upgrade orchestra before running it",
+            file=sys.stderr,
+        )
+        return 1
 
     collector = Collector(store_dir=args.store_dir, port=args.port)
     if args.once:

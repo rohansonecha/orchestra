@@ -26,7 +26,9 @@ resources:
 file_mounts:
   ~/.pi/agent/models.json: private/models.json
   ~/.pi/agent/agents/work.md: private/agents/work.md
-  ~/.pi/agent/themes/orchestra.json: skypilot/pi-theme.json
+  ~/.pi/agent/themes/orchestra-dark.json: skypilot/pi-theme.json
+  ~/.pi/agent/themes/orchestra-light.json: skypilot/pi-theme-light.json
+  ~/.pi/agent/extensions/claude-look.ts: pi/extensions/claude-look.ts
 
 # Same secrets as main-box.
 secrets:
@@ -60,7 +62,7 @@ setup: |
   fi
 
   # --- Pi settings (theme) ---
-  echo '{"theme":"orchestra"}' > ~/.pi/agent/settings.json
+  echo '{"theme":"orchestra-light","hideThinkingBlock":true,"quietStartup":true,"collapseChangelog":true}' > ~/.pi/agent/settings.json
 
   # --- Install tui-use (for automated TUI testing) ---
   sudo npm install -g tui-use
@@ -117,6 +119,9 @@ setup: |
     echo "GIT_NAME=$GIT_NAME"
     echo "GITHUB_TOKEN=$GITHUB_TOKEN"
     echo "LINEAR_TOKEN=$LINEAR_TOKEN"
+    # Repo that sessions get worktrees in when orchestra is started
+    # outside a git repo (e.g. from ~ after sky ssh).
+    echo "ORCHESTRA_WORK_REPO=$HOME/work-repos/prototype"
   } > ~/.orchestra/env
   chmod 600 ~/.orchestra/env
 

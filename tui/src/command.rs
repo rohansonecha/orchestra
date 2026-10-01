@@ -1,22 +1,47 @@
 // command.rs — Parse slash-commands from the dispatch input.
 //
 // The Agent View dispatch input accepts either a plain prompt (dispatch a
-// new session) or a `/`-command (Design §9). Currently only `/agent` is
-// recognized; `/session`, `/model`, etc. can be added later.
+// new session with the default backend) or a `/`-command (Design §9):
 //
-// Parsing is intentionally strict: a `/agent` command must have a name,
-// and the name must be a valid SkyPilot cluster suffix (alphanumeric +
-// hyphens). Anything else falls through to `Other` so the caller can show
-// an error or treat it as a plain prompt.
+//   /pi|/claude|/codex <prompt>   dispatch with that backend, once
+//   /backend <pi|claude|codex>    set the default backend
+//   /model [<model>]              set (or show) the default model for the
+//                                 default backend; `/model -` clears it
+//   /import                       browse Claude Code / Codex sessions
+//   /switch <target>              move the selected session to another
+//                                 agent/model, keeping the conversation
+//   /rename <name>
+//
+// Parsing is intentionally strict: a `/rename` command must have a name.
+// Anything else falls through to `Other` so the caller can show an error
+// or treat it as a plain prompt.
+
+use crate::session::Backend;
 
 /// A parsed dispatch command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchCommand {
-    /// `/agent <name>` — spawn a new sub-agent under the current agent.
-    /// `name` is validated (lowercased, sanitized to a cluster suffix).
-    SpawnAgent { name: String },
     /// `/rename <new name>` — rename the selected node (alternative to `n`).
     Rename { new_name: String },
+    /// `/pi|/claude|/codex <prompt>` — dispatch with a specific backend.
+    DispatchWith { backend: Backend, text: String },
+    /// `/backend <name>` — change the default backend.
+    SetBackend { backend: Backend },
+    /// `/model [<model>]` — None shows the current default.
+    Model { model: Option<String> },
+    /// `/import` — open the session importer.
+    Import,
+    /// `/import all` — toggle listing sessions from every directory.
+    ImportAll,
+    /// `/switch <target>` — move the selected session to another agent or
+    /// model, keeping its conversation (`claude`, `codex:gpt-6`,
+    /// `pi:provider/model`, or a bare pi model name).
+    Switch { target: String },
+    /// `/theme light|dark`.
+    Theme { theme: String },
+    /// A session command (/code-review, /simplify, /loop, /btw, ...): see
+    /// commands.rs. `args` is everything after the command word.
+    Session { name: String, args: String },
     /// A `/`-prefixed command we don't recognize. The raw text is kept so
     /// the caller can surface "unknown command: /foo".
     Unknown { raw: String },
@@ -39,14 +64,6 @@ pub fn parse(input: &str) -> DispatchCommand {
         None => (&trimmed[1..], ""),
     };
     match cmd {
-        "agent" => {
-            let name = sanitize_name(rest);
-            if name.is_empty() {
-                DispatchCommand::Unknown { raw: trimmed.to_string() }
-            } else {
-                DispatchCommand::SpawnAgent { name }
-            }
-        }
         "rename" => {
             if rest.is_empty() {
                 DispatchCommand::Unknown { raw: trimmed.to_string() }
@@ -54,21 +71,29 @@ pub fn parse(input: &str) -> DispatchCommand {
                 DispatchCommand::Rename { new_name: rest.to_string() }
             }
         }
+        "pi" | "claude" | "codex" if !rest.is_empty() => DispatchCommand::DispatchWith {
+            backend: Backend::parse(cmd).unwrap_or_default(),
+            text: rest.to_string(),
+        },
+        "backend" => match Backend::parse(rest) {
+            Some(backend) => DispatchCommand::SetBackend { backend },
+            None => DispatchCommand::Unknown { raw: trimmed.to_string() },
+        },
+        "model" => DispatchCommand::Model {
+            model: (!rest.is_empty()).then(|| rest.to_string()),
+        },
+        "import" if rest == "all" => DispatchCommand::ImportAll,
+        "import" => DispatchCommand::Import,
+        "theme" => match rest {
+            "light" | "dark" => DispatchCommand::Theme { theme: rest.to_string() },
+            _ => DispatchCommand::Unknown { raw: trimmed.to_string() },
+        },
+        "code-review" | "simplify" | "autofix-pr" | "loop" | "background" | "branch" | "btw" | "recap" | "bug"
+        | "teleport" | "suspend" => DispatchCommand::Session { name: cmd.to_string(), args: rest.to_string() },
+        // No target: open the picker.
+        "switch" => DispatchCommand::Switch { target: rest.to_string() },
         _ => DispatchCommand::Unknown { raw: trimmed.to_string() },
     }
-}
-
-/// Sanitize a candidate agent/session name into a valid cluster suffix:
-/// lowercase, alphanumeric + hyphens only, no leading/trailing hyphens.
-/// Returns empty if the input has no usable characters.
-pub fn sanitize_name(raw: &str) -> String {
-    let s: String = raw
-        .trim()
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
-        .collect();
-    let s = s.trim_matches('-');
-    s.to_string()
 }
 
 #[cfg(test)]
@@ -90,31 +115,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_command() {
-        assert_eq!(
-            parse("/agent research-box"),
-            DispatchCommand::SpawnAgent { name: "research-box".to_string() }
-        );
-    }
-
-    #[test]
-    fn agent_command_sanitizes_name() {
-        assert_eq!(
-            parse("/agent Research Box!"),
-            DispatchCommand::SpawnAgent { name: "research-box".to_string() }
-        );
-    }
-
-    #[test]
-    fn agent_command_without_name_is_unknown() {
-        match parse("/agent") {
-            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/agent"),
-            other => panic!("expected Unknown, got {other:?}"),
-        }
-        match parse("/agent   ") {
-            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/agent"),
-            other => panic!("expected Unknown, got {other:?}"),
-        }
+    fn agent_command_is_now_unknown() {
+        assert!(matches!(parse("/agent research-box"), DispatchCommand::Unknown { .. }));
     }
 
     #[test]
@@ -127,16 +129,41 @@ mod tests {
 
     #[test]
     fn unknown_command_keeps_raw() {
-        match parse("/model foo") {
-            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/model foo"),
+        match parse("/frobnicate foo") {
+            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/frobnicate foo"),
             other => panic!("expected Unknown, got {other:?}"),
         }
     }
 
     #[test]
-    fn sanitize_strips_leading_trailing_hyphens() {
-        assert_eq!(sanitize_name("--foo--"), "foo");
-        assert_eq!(sanitize_name("a b c"), "a-b-c");
-        assert_eq!(sanitize_name("!!!"), "");
+    fn backend_commands() {
+        assert_eq!(
+            parse("/claude fix the bug"),
+            DispatchCommand::DispatchWith { backend: Backend::Claude, text: "fix the bug".into() }
+        );
+        assert_eq!(
+            parse("/codex  review"),
+            DispatchCommand::DispatchWith { backend: Backend::Codex, text: "review".into() }
+        );
+        assert!(matches!(parse("/claude"), DispatchCommand::Unknown { .. }));
+        assert_eq!(parse("/backend cc"), DispatchCommand::SetBackend { backend: Backend::Claude });
+        assert!(matches!(parse("/backend vim"), DispatchCommand::Unknown { .. }));
+    }
+
+    #[test]
+    fn model_and_import() {
+        assert_eq!(parse("/model"), DispatchCommand::Model { model: None });
+        assert_eq!(
+            parse("/model openrouter/qwen/qwen3-coder"),
+            DispatchCommand::Model { model: Some("openrouter/qwen/qwen3-coder".into()) }
+        );
+        assert_eq!(parse("/import"), DispatchCommand::Import);
+        assert_eq!(parse("/switch claude:opus"), DispatchCommand::Switch { target: "claude:opus".into() });
+        assert_eq!(parse("/switch"), DispatchCommand::Switch { target: String::new() });
+        assert_eq!(
+            parse("/loop 5m check CI"),
+            DispatchCommand::Session { name: "loop".into(), args: "5m check CI".into() }
+        );
+        assert_eq!(parse("/recap"), DispatchCommand::Session { name: "recap".into(), args: String::new() });
     }
 }

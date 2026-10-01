@@ -61,7 +61,8 @@ cleanup() {
     pkill -x orchestra 2>/dev/null || true
     tmux kill-server 2>/dev/null || true
     sleep 1
-    rm -rf ~/.orchestra/sessions/* ~/orchestra/worktrees/* 2>/dev/null || true
+    rm -rf ~/.orchestra/sessions/* ~/orchestra/worktrees/* ~/work-repos/prototype/.orchestra/worktrees/* 2>/dev/null || true
+    git -C ~/work-repos/prototype worktree prune 2>/dev/null || true
 }
 
 trap cleanup EXIT

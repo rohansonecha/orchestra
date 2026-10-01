@@ -308,7 +308,7 @@ fn absolute_cell(area: Rect, col: u16, row: u16) -> (u16, u16) {
 /// glyphs advance rightward. Out-of-bounds writes are silently dropped.
 fn set_glyph(buf: &mut Buffer, x: u16, y: u16, glyph: &str, style: Style) {
     for (i, ch) in glyph.chars().enumerate() {
-        let xi = x.checked_add(i as u16).unwrap_or(u16::MAX);
+        let xi = x.saturating_add(i as u16);
         if let Some(cell) = buf.cell_mut((xi, y)) {
             cell.set_char(ch);
             cell.set_style(style);
@@ -405,7 +405,9 @@ mod tests {
         Buffer::empty(Rect::new(0, 0, w, h))
     }
 
-    fn tree_from(specs: &[(&str, Option<&str>, &[&str], NodeKind, NodeState)]) -> Tree {
+    type Spec<'a> = (&'a str, Option<&'a str>, &'a [&'a str], NodeKind, NodeState);
+
+    fn tree_from(specs: &[Spec]) -> Tree {
         let now = crate::tree_store::unix_now();
         let mut nodes = HashMap::new();
         for &(id, parent, children, kind, state) in specs {
