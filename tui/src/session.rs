@@ -591,6 +591,7 @@ pub fn spawn_with(sess: &Session, pre: Option<&str>) -> std::io::Result<()> {
 set -g default-terminal \"screen-256color\"
 set -ga terminal-overrides \",*256col*:Tc\"
 set -g extended-keys on
+set -g extended-keys-format csi-u
 set -g remain-on-exit on
 # In orchestra sessions, Left detaches back to orchestra when the cursor is
 # at the start of the agent's input; otherwise it goes to the agent.
@@ -652,6 +653,17 @@ pub fn apply_tmux_setup(left_check: &str) {
     // scrolled position. No "Copied" message: tmux cannot know whether the
     // terminal accepted it.
     let _ = Command::new("tmux").args(["set-option", "-s", "set-clipboard", "on"]).status();
+    // Modified keys (Shift+Enter, Shift+Tab, ...) reach the agents in the
+    // CSI u encoding pi and Claude Code expect; tmux's default (xterm)
+    // makes pi warn at startup. The format option is tmux 3.5+.
+    let _ = Command::new("tmux").args(["set-option", "-s", "extended-keys", "on"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    if tmux_server_version().is_some_and(|v| v >= (3, 5)) {
+        let _ = Command::new("tmux")
+            .args(["set-option", "-s", "extended-keys-format", "csi-u"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     // A "drag" that barely moved (same line, at most one column) is a
     // click: leave copy mode, back to the prompt. A real drag copies and
     // keeps the highlight so you can see what was copied; scrolling or
