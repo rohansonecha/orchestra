@@ -142,7 +142,7 @@ pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
             .iter()
             .filter(|e| e.backend == backend && app.managing(e).is_none() && !app.external_pinned(e))
             .count();
-        let collapsed = app.is_collapsed(backend);
+        let collapsed = app.is_collapsed(GroupKey::Outside(backend));
         Group {
             title: if collapsed {
                 format!("{name} · not in orchestra")
@@ -159,9 +159,23 @@ pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
             hidden: if collapsed { total } else { 0 },
         }
     };
+    // Counted here because rows() leaves out a folded group's rows.
+    let n_pinned = app.sessions.iter().filter(|s| app.session_pinned(s)).count()
+        + app.import.items.iter().filter(|e| app.managing(e).is_none() && app.external_pinned(e)).count();
+    let n_unpinned = app.sessions.len() - app.sessions.iter().filter(|s| app.session_pinned(s)).count();
+    let own_group = |key: GroupKey, title: &str, rows: Vec<Row>, total: usize| {
+        let collapsed = app.is_collapsed(key);
+        Group {
+            title: title.to_string(),
+            rows: if collapsed { Vec::new() } else { rows },
+            collapsible: total > 0,
+            collapsed,
+            hidden: if collapsed { total } else { 0 },
+        }
+    };
     let groups = vec![
-        Group::plain("Pinned", pinned_rows),
-        Group::plain("Sessions", session_rows),
+        own_group(GroupKey::Pinned, "Pinned", pinned_rows, n_pinned),
+        own_group(GroupKey::Sessions, "Sessions", session_rows, n_unpinned),
         external_group(Backend::Claude, "Claude Code"),
         external_group(Backend::Codex, "Codex"),
         external_group(Backend::Pi, "pi"),

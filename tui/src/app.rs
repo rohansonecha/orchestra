@@ -53,9 +53,29 @@ pub(crate) struct ImportState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RowRef {
     Session(usize),
-    /// Header of the Claude Code / Codex group (folds it).
-    Group(Backend),
+    /// A group's header (folds it).
+    Group(GroupKey),
     External(usize),
+}
+
+/// The list's groups: pinned rows, orchestra's sessions, and one group per
+/// agent for sessions started outside orchestra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum GroupKey {
+    Pinned,
+    Sessions,
+    Outside(Backend),
+}
+
+impl GroupKey {
+    /// Name saved in config.json's `collapsed` list.
+    fn as_str(self) -> &'static str {
+        match self {
+            GroupKey::Pinned => "pinned",
+            GroupKey::Sessions => "sessions",
+            GroupKey::Outside(b) => b.as_str(),
+        }
+    }
 }
 
 /// What each session is doing, refreshed every couple of seconds.
@@ -241,6 +261,8 @@ impl App {
             last_used: HashMap::new(),
         };
         app.rescan_import();
+        // Start on the first session rather than a group heading.
+        app.sel = app.rows().iter().position(|r| !matches!(r, RowRef::Group(_))).unwrap_or(0);
         agent_view::set_light(app.config.light());
         app.reload_tree();
         app.selected_node_id = tree_view::default_selection(&app.tree, None);
@@ -272,14 +294,25 @@ impl App {
     /// group.
     pub(crate) fn rows(&self) -> Vec<RowRef> {
         let outside = |e: &ExternalSession| self.managing(e).is_none();
-        let mut rows: Vec<RowRef> = (0..self.sessions.len())
-            .filter(|&i| self.session_pinned(&self.sessions[i]))
-            .map(RowRef::Session)
-            .collect();
-        rows.extend(
+        let mut rows = Vec::new();
+        let mut group = |key: GroupKey, items: Vec<RowRef>| {
+            if !items.is_empty() {
+                rows.push(RowRef::Group(key));
+                if !self.is_collapsed(key) {
+                    rows.extend(items);
+                }
+            }
+        };
+        let mut pinned: Vec<RowRef> =
+            (0..self.sessions.len()).filter(|&i| self.session_pinned(&self.sessions[i])).map(RowRef::Session).collect();
+        pinned.extend(
             self.import.items.iter().enumerate().filter(|(_, e)| outside(e) && self.external_pinned(e)).map(|(i, _)| RowRef::External(i)),
         );
-        rows.extend((0..self.sessions.len()).filter(|&i| !self.session_pinned(&self.sessions[i])).map(RowRef::Session));
+        group(GroupKey::Pinned, pinned);
+        group(
+            GroupKey::Sessions,
+            (0..self.sessions.len()).filter(|&i| !self.session_pinned(&self.sessions[i])).map(RowRef::Session).collect(),
+        );
         for backend in [Backend::Claude, Backend::Codex, Backend::Pi] {
             let items: Vec<RowRef> = self
                 .import
@@ -289,13 +322,7 @@ impl App {
                 .filter(|(_, e)| e.backend == backend && outside(e) && !self.external_pinned(e))
                 .map(|(i, _)| RowRef::External(i))
                 .collect();
-            if items.is_empty() {
-                continue;
-            }
-            rows.push(RowRef::Group(backend));
-            if !self.is_collapsed(backend) {
-                rows.extend(items);
-            }
+            group(GroupKey::Outside(backend), items);
         }
         rows
     }
@@ -345,12 +372,12 @@ impl App {
         self.status_message = if pinned { format!("Unpinned {title}") } else { format!("Pinned {title} — ctrl+p again unpins") };
     }
 
-    pub(crate) fn is_collapsed(&self, b: Backend) -> bool {
-        self.config.collapsed.iter().any(|c| c == b.as_str())
+    pub(crate) fn is_collapsed(&self, g: GroupKey) -> bool {
+        self.config.collapsed.iter().any(|c| c == g.as_str())
     }
 
-    /// Fold or unfold a Claude Code / Codex group (remembered in config).
-    pub(crate) fn set_collapsed(&mut self, b: Backend, collapse: bool) {
+    /// Fold or unfold a group (remembered in config).
+    pub(crate) fn set_collapsed(&mut self, b: GroupKey, collapse: bool) {
         self.config.collapsed.retain(|c| c != b.as_str());
         if collapse {
             self.config.collapsed.push(b.as_str().to_string());

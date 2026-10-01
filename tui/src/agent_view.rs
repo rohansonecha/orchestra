@@ -94,6 +94,7 @@ pub struct Group {
 }
 
 impl Group {
+    #[cfg(test)]
     pub fn plain(title: impl Into<String>, rows: Vec<Row>) -> Self {
         Self { title: title.into(), rows, collapsible: false, collapsed: false, hidden: 0 }
     }
