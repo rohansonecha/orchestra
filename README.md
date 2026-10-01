@@ -246,7 +246,10 @@ orchestra (terminal UI, Rust + ratatui)
 ```
 orchestra/
 ├── tui/src/
-│   ├── main.rs          # app, key handling, session actions, commands
+│   ├── main.rs          # startup, terminal setup, CLI subcommands
+│   ├── app.rs           # application state: sessions, pickers, dispatch, commands
+│   ├── keys.rs          # key handling for every view and input mode
+│   ├── render.rs        # drawing: list, tree, overlays, footer
 │   ├── agent_view.rs    # the session list, picker and panels
 │   ├── session.rs       # sessions, agent launch commands, tmux setup
 │   ├── history.rs       # reads and writes each agent's transcript format; tool mapping

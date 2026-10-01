@@ -220,11 +220,16 @@ impl TreeStore {
         &self.dir
     }
     /// Load `index.json`. Returns `None` if the store doesn't exist yet
-    /// (fresh main-box with no collector run).
+    /// (fresh main-box with no collector run), or if it was written by a
+    /// different schema version than this build understands — a newer
+    /// format could be misread, and an older one is stale. Rather than
+    /// risk corrupting the store, the TUI falls back to its synthesized
+    /// tree (see main.rs).
     pub fn load_index(&self) -> Option<Index> {
         let path = self.dir.join("index.json");
         let content = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
+        let index: Index = serde_json::from_str(&content).ok()?;
+        (index.version == SCHEMA_VERSION).then_some(index)
     }
 
     /// Load a single node by id. Returns `None` if missing or unparseable.
@@ -447,6 +452,22 @@ mod tests {
         assert!(tree.has_root());
         assert_eq!(tree.nodes.len(), 3);
         assert!(tree.get("agent-research-box").is_some());
+    }
+
+    #[test]
+    fn index_from_a_different_schema_is_rejected() {
+        let (store, dir) = store_with(&[agent("agent-main-box", None, &[])], "agent-main-box");
+        // Rewrite the index as if a newer collector had written it.
+        let index = Index {
+            root_id: "agent-main-box".to_string(),
+            version: SCHEMA_VERSION + 1,
+            updated_at: unix_now(),
+        };
+        fs::write(dir.path().join("index.json"), serde_json::to_string_pretty(&index).unwrap()).unwrap();
+        assert!(store.load_index().is_none());
+        // The TUI degrades to its synthesized tree instead of misreading it.
+        let tree = store.load_tree();
+        assert!(!tree.has_root());
     }
 
     #[test]

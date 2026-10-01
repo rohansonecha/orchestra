@@ -10,21 +10,17 @@
 //   /import                       browse Claude Code / Codex sessions
 //   /switch <target>              move the selected session to another
 //                                 agent/model, keeping the conversation
-//   /agent <name>, /rename <name>
+//   /rename <name>
 //
-// Parsing is intentionally strict: a `/agent` command must have a name,
-// and the name must be a valid SkyPilot cluster suffix (alphanumeric +
-// hyphens). Anything else falls through to `Other` so the caller can show
-// an error or treat it as a plain prompt.
+// Parsing is intentionally strict: a `/rename` command must have a name.
+// Anything else falls through to `Other` so the caller can show an error
+// or treat it as a plain prompt.
 
 use crate::session::Backend;
 
 /// A parsed dispatch command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchCommand {
-    /// `/agent <name>` — spawn a new sub-agent under the current agent.
-    /// `name` is validated (lowercased, sanitized to a cluster suffix).
-    SpawnAgent { name: String },
     /// `/rename <new name>` — rename the selected node (alternative to `n`).
     Rename { new_name: String },
     /// `/pi|/claude|/codex <prompt>` — dispatch with a specific backend.
@@ -68,14 +64,6 @@ pub fn parse(input: &str) -> DispatchCommand {
         None => (&trimmed[1..], ""),
     };
     match cmd {
-        "agent" => {
-            let name = sanitize_name(rest);
-            if name.is_empty() {
-                DispatchCommand::Unknown { raw: trimmed.to_string() }
-            } else {
-                DispatchCommand::SpawnAgent { name }
-            }
-        }
         "rename" => {
             if rest.is_empty() {
                 DispatchCommand::Unknown { raw: trimmed.to_string() }
@@ -108,19 +96,6 @@ pub fn parse(input: &str) -> DispatchCommand {
     }
 }
 
-/// Sanitize a candidate agent/session name into a valid cluster suffix:
-/// lowercase, alphanumeric + hyphens only, no leading/trailing hyphens.
-/// Returns empty if the input has no usable characters.
-pub fn sanitize_name(raw: &str) -> String {
-    let s: String = raw
-        .trim()
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
-        .collect();
-    let s = s.trim_matches('-');
-    s.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,31 +115,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_command() {
-        assert_eq!(
-            parse("/agent research-box"),
-            DispatchCommand::SpawnAgent { name: "research-box".to_string() }
-        );
-    }
-
-    #[test]
-    fn agent_command_sanitizes_name() {
-        assert_eq!(
-            parse("/agent Research Box!"),
-            DispatchCommand::SpawnAgent { name: "research-box".to_string() }
-        );
-    }
-
-    #[test]
-    fn agent_command_without_name_is_unknown() {
-        match parse("/agent") {
-            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/agent"),
-            other => panic!("expected Unknown, got {other:?}"),
-        }
-        match parse("/agent   ") {
-            DispatchCommand::Unknown { raw } => assert_eq!(raw, "/agent"),
-            other => panic!("expected Unknown, got {other:?}"),
-        }
+    fn agent_command_is_now_unknown() {
+        assert!(matches!(parse("/agent research-box"), DispatchCommand::Unknown { .. }));
     }
 
     #[test]
@@ -213,12 +165,5 @@ mod tests {
             DispatchCommand::Session { name: "loop".into(), args: "5m check CI".into() }
         );
         assert_eq!(parse("/recap"), DispatchCommand::Session { name: "recap".into(), args: String::new() });
-    }
-
-    #[test]
-    fn sanitize_strips_leading_trailing_hyphens() {
-        assert_eq!(sanitize_name("--foo--"), "foo");
-        assert_eq!(sanitize_name("a b c"), "a-b-c");
-        assert_eq!(sanitize_name("!!!"), "");
     }
 }
