@@ -43,6 +43,10 @@ pub(crate) struct ImportState {
     /// Show sessions from every directory, not just the current repo.
     pub(crate) all_repos: bool,
     pub(crate) scanned: Option<Instant>,
+    /// A scan running on a background thread: reading every transcript on
+    /// disk takes long enough to stall typing. Tagged with the directory it
+    /// scanned so a result for an old /import all setting is dropped.
+    pub(crate) pending: Option<std::sync::mpsc::Receiver<(Option<PathBuf>, Vec<ExternalSession>)>>,
 }
 
 /// A row of the main list.
@@ -215,7 +219,7 @@ impl App {
             repo,
             launch_dir,
             config: Config::load(),
-            import: ImportState { items: Vec::new(), all_repos: false, scanned: None },
+            import: ImportState { items: Vec::new(), all_repos: false, scanned: None, pending: None },
             sel: 0,
             activity: HashMap::new(),
             summaries: HashMap::new(),
@@ -376,6 +380,7 @@ impl App {
     pub(crate) fn refresh_activity(&mut self) {
         self.poll_side_answer();
         self.finish_switches();
+        self.finish_import_scan();
         if let Some(rx) = &self.pi_models_rx {
             if let Ok(m) = rx.try_recv() {
                 self.pi_models = Some(m);
@@ -399,8 +404,9 @@ impl App {
             .iter()
             .map(|s| (s.name.clone(), s.backend, switch::native_transcript(s)))
             .collect();
+        let live = session::tmux_sessions();
         for (name, backend, path) in names {
-            let working = pane_working(&name);
+            let working = live.contains_key(&name) && pane_working(&name);
             let (summary, last_active) = match &path {
                 Some(p) => (
                     self.summary_for(backend, p),
@@ -412,8 +418,8 @@ impl App {
                 ),
                 None => (None, None),
             };
-            let looping = commands::loop_running(&name);
-            let attached = tmux_attached(&name);
+            let looping = live.contains_key(&commands::loop_tmux_name(&name));
+            let attached = live.get(&name).copied().unwrap_or(false);
             if working || looping || attached || self.switching.contains_key(&name) || !self.last_used.contains_key(&name) {
                 self.last_used.insert(name.clone(), Instant::now());
             }
@@ -1110,14 +1116,39 @@ impl App {
         }
     }
 
-    pub(crate) fn rescan_import(&mut self) {
-        let under = if self.import.all_repos {
+    fn import_scope(&self) -> Option<PathBuf> {
+        if self.import.all_repos {
             None
         } else {
             Some(self.repo.as_ref().map(|r| r.root.clone()).unwrap_or_else(|| self.launch_dir.clone()))
-        };
-        self.import.items = import::scan(under.as_deref());
+        }
+    }
+
+    /// Start a scan for outside sessions in the background; the list
+    /// updates when it finishes (`finish_import_scan`).
+    pub(crate) fn rescan_import(&mut self) {
+        let under = self.import_scope();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let items = import::scan(under.as_deref());
+            let _ = tx.send((under, items));
+        });
+        self.import.pending = Some(rx);
         self.import.scanned = Some(Instant::now());
+    }
+
+    pub(crate) fn finish_import_scan(&mut self) {
+        let Some(rx) = &self.import.pending else { return };
+        match rx.try_recv() {
+            Ok((under, items)) => {
+                self.import.pending = None;
+                if under == self.import_scope() {
+                    self.import.items = items;
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.import.pending = None,
+        }
     }
 
     pub(crate) fn selected_external(&self) -> Option<ExternalSession> {
@@ -1755,15 +1786,6 @@ pub(crate) fn fmt_secs(s: u64) -> String {
         s if s % 60 == 0 => format!("{}m", s / 60),
         s => format!("{s}s"),
     }
-}
-
-/// Whether a tmux session is open in some terminal right now.
-pub(crate) fn tmux_attached(name: &str) -> bool {
-    Command::new("tmux")
-        .args(["display-message", "-p", "-t", name, "#{session_attached}"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() != "0")
-        .unwrap_or(true)
 }
 
 /// "~/x" for paths under $HOME.

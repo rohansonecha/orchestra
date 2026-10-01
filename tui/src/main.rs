@@ -247,8 +247,9 @@ fn main() -> anyhow::Result<()> {
         // reads) refresh about once a second, and right after returning
         // from a session — not on every keystroke, which made typing lag.
         if returned || last_refresh.is_none_or(|t| t.elapsed().as_millis() >= 1000) {
+            let live = session::tmux_sessions();
             for sess in &mut app.sessions {
-                sess.refresh_state();
+                sess.refresh_state(&live);
             }
             app.reload_tree();
             last_refresh = Some(Instant::now());

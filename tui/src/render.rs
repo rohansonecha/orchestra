@@ -156,7 +156,9 @@ pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
         external_group(Backend::Pi, "pi"),
     ];
     let n_working = app.sessions.iter().filter(|s| working(s)).count();
-    let n_ready = app.sessions.len() - n_working;
+    let n_stopped = app.sessions.iter().filter(|s| matches!(s.state, SessionState::Completed | SessionState::Failed)).count();
+    let n_ready = app.sessions.len() - n_working - n_stopped;
+    let stopped = if n_stopped > 0 { format!(" · {n_stopped} stopped") } else { String::new() };
     let default = switch::Target { backend: app.config.default_backend, model: app.config.model_for(app.config.default_backend) };
     let (title, place) = match &app.repo {
         Some(r) => (tilde(&r.root), format!("new sessions get a worktree off {}", r.base_ref)),
@@ -254,7 +256,7 @@ pub(crate) fn view_model(app: &App) -> agent_view::ViewModel {
     };
     agent_view::ViewModel {
         title,
-        subtitle: format!("{n_working} working · {n_ready} ready · {place}"),
+        subtitle: format!("{n_working} working · {n_ready} ready{stopped} · {place}"),
         hint: "enter opens · ← inside a session comes back here · ctrl+s switches agent/model · ? for shortcuts".into(),
         groups,
         selected: (!app.rows().is_empty()).then_some(app.sel.min(app.rows().len().saturating_sub(1))),

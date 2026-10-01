@@ -1,6 +1,7 @@
 // Session management — each session is a coding agent (pi, Claude Code, or
 // Codex) running inside a tmux session. tmux gives us attach/detach for free.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -204,8 +205,10 @@ impl Session {
 
     /// Refresh state by checking if the tmux session is still alive and
     /// whether the readiness marker exists.
-    pub fn refresh_state(&mut self) {
-        if !tmux_alive(&self.name) {
+    /// `live` is one `tmux_sessions()` snapshot shared by every session,
+    /// so a refresh is one tmux call instead of one per session.
+    pub fn refresh_state(&mut self, live: &HashMap<String, bool>) {
+        if !live.contains_key(&self.name) {
             // tmux session ended — the process finished
             if self.state != SessionState::Failed {
                 self.state = SessionState::Completed;
@@ -803,6 +806,23 @@ pub fn load_sessions() -> Vec<Session> {
 /// session removes its state. (Rewriting here would also let a second
 /// orchestra window overwrite newer state with its stale copy.)
 pub fn save_sessions(_sessions: &[Session]) {}
+
+/// Every tmux session, and whether a terminal has it open, from a single
+/// `tmux list-sessions` call (empty when no tmux server is running).
+pub fn tmux_sessions() -> HashMap<String, bool> {
+    let Ok(out) = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}\t#{session_attached}"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return HashMap::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(name, attached)| (name.to_string(), attached != "0"))
+        .collect()
+}
 
 /// Check if a tmux session is alive.
 pub fn tmux_alive(name: &str) -> bool {
