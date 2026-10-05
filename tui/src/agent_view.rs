@@ -141,6 +141,59 @@ fn width(s: &str) -> usize {
     s.chars().count()
 }
 
+/// Most prompt lines shown at once; longer prompts scroll to the cursor.
+const MAX_PROMPT_LINES: usize = 8;
+
+/// Word-wrap the prompt to `w` columns, like Claude Code's input box.
+/// Returns the char index each line starts at, and the line and column of
+/// char index `cursor`. A newline in the text starts a new line.
+pub fn wrap_prompt(text: &str, w: usize, cursor: usize) -> (Vec<(usize, usize)>, (usize, usize)) {
+    let w = w.max(1);
+    let chars: Vec<char> = text.chars().collect();
+    // (start, end) char ranges, end exclusive, newlines not included.
+    let mut lines: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    let mut last_space: Option<usize> = None;
+    while i < chars.len() {
+        if chars[i] == '\n' {
+            lines.push((start, i));
+            start = i + 1;
+            i += 1;
+            last_space = None;
+            continue;
+        }
+        if i - start == w {
+            // Break after the last space on this line, else mid-word.
+            let end = match last_space {
+                Some(sp) if sp > start => sp + 1,
+                _ => i,
+            };
+            lines.push((start, end));
+            start = end;
+            last_space = None;
+            i = start;
+            continue;
+        }
+        if chars[i] == ' ' {
+            last_space = Some(i);
+        }
+        i += 1;
+    }
+    lines.push((start, chars.len()));
+    let cursor = cursor.min(chars.len());
+    let li = lines.iter().rposition(|&(st, _)| st <= cursor).unwrap_or(0);
+    let mut pos = (li, cursor - lines[li].0);
+    // A cursor just past a full line sits at the start of the next row.
+    if pos.1 >= w {
+        pos = (li + 1, 0);
+        if li + 1 == lines.len() {
+            lines.push((chars.len(), chars.len()));
+        }
+    }
+    (lines, pos)
+}
+
 /// Truncate to `max` columns with an ellipsis.
 pub fn fit(s: &str, max: usize) -> String {
     let s = s.replace(['\n', '\t'], " ");
@@ -249,8 +302,13 @@ pub fn render(buf: &mut Buffer, area: Rect, vm: &ViewModel) -> (u16, u16) {
     line_at(buf, y, Line::from(Span::styled(format!(" {}", fit(&vm.hint, w.saturating_sub(1))), Style::default().fg(grey()))));
     y += 2;
 
-    // Bottom block: rule, prompt, rule, footer.
-    let bottom_h = 4u16;
+    // Bottom block: rule, prompt (wrapped, growing upward), rule, footer.
+    let text_w = w.saturating_sub(2).max(1);
+    let (prompt_lines, (cur_line, cur_col)) = wrap_prompt(&vm.input, text_w, vm.cursor);
+    let shown = prompt_lines.len().min(MAX_PROMPT_LINES);
+    // Keep the cursor's line in view when the prompt is taller than shown.
+    let first = (cur_line + 1).saturating_sub(shown).min(prompt_lines.len() - shown);
+    let bottom_h = 3 + shown as u16;
     let list_top = y;
     let list_bottom = area.bottom().saturating_sub(bottom_h);
     let list_h = list_bottom.saturating_sub(list_top) as usize;
@@ -330,25 +388,30 @@ pub fn render(buf: &mut Buffer, area: Rect, vm: &ViewModel) -> (u16, u16) {
     // Prompt.
     let py = list_bottom;
     line_at(buf, py, rule(area.width));
-    let prompt = if vm.input.is_empty() {
-        Line::from(vec![
+    if vm.input.is_empty() {
+        line_at(buf, py + 1, Line::from(vec![
             Span::styled("❯ ", Style::default().fg(text())),
             Span::styled(vm.placeholder.clone(), Style::default().fg(dim())),
-        ])
+        ]));
     } else {
-        Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(text())),
-            Span::styled(vm.input.clone(), Style::default().fg(bright())),
-        ])
-    };
-    line_at(buf, py + 1, prompt);
-    line_at(buf, py + 2, rule(area.width));
+        let chars: Vec<char> = vm.input.chars().collect();
+        for (row, &(st, end)) in prompt_lines.iter().skip(first).take(shown).enumerate() {
+            let lead = if first + row == 0 { "❯ " } else { "  " };
+            let text_part: String = chars[st..end].iter().collect();
+            line_at(buf, py + 1 + row as u16, Line::from(vec![
+                Span::styled(lead, Style::default().fg(text())),
+                Span::styled(text_part, Style::default().fg(bright())),
+            ]));
+        }
+    }
+    let after = py + 1 + shown as u16;
+    line_at(buf, after, rule(area.width));
     let footer_color = if vm.footer_is_status { yellow() } else { grey() };
-    line_at(buf, py + 3, Line::from(Span::styled(
+    line_at(buf, after + 1, Line::from(Span::styled(
         format!("  {}", fit(&vm.footer, w.saturating_sub(2))),
         Style::default().fg(footer_color),
     )));
-    (area.x + 2 + vm.cursor as u16, py + 1)
+    (area.x + 2 + cur_col as u16, py + 1 + (cur_line - first) as u16)
 }
 
 fn render_overlay(buf: &mut Buffer, area: Rect, o: &Overlay) {
@@ -524,4 +587,20 @@ mod tests {
         assert!(screen.iter().any(|l| l.contains("1. Claude Code ✔")), "{screen:#?}");
         assert!(screen.iter().any(|l| l.contains("❯ 2. pi · GLM")), "{screen:#?}");
     }
+
+    #[test]
+    fn prompt_wraps_at_words() {
+        let (lines, cur) = wrap_prompt("hello world foo", 8, 15);
+        assert_eq!(lines, vec![(0, 6), (6, 12), (12, 15)]);
+        assert_eq!(cur, (2, 3));
+        // A long word breaks mid-word; a newline starts a new line.
+        let (lines, _) = wrap_prompt("abcdefghij\nxy", 4, 0);
+        assert_eq!(lines, vec![(0, 4), (4, 8), (8, 10), (11, 13)]);
+        // Cursor right after a full line moves to the next row.
+        let (lines, cur) = wrap_prompt("abcd", 4, 4);
+        assert_eq!(cur, (1, 0));
+        assert_eq!(lines.len(), 2);
+        assert_eq!(wrap_prompt("", 10, 0).1, (0, 0));
+    }
+
 }
