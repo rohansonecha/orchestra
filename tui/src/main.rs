@@ -61,6 +61,7 @@ mod command;
 mod commands;
 mod config;
 mod coverage;
+mod health;
 mod history;
 mod import;
 mod keys;
@@ -235,6 +236,7 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    health::start();
 
     let mut last_refresh: Option<Instant> = None;
     'main: loop {
@@ -247,6 +249,7 @@ fn main() -> anyhow::Result<()> {
         // reads) refresh about once a second, and right after returning
         // from a session — not on every keystroke, which made typing lag.
         if returned || last_refresh.is_none_or(|t| t.elapsed().as_millis() >= 1000) {
+            health::phase(health::REFRESH);
             let live = session::tmux_sessions();
             for sess in &mut app.sessions {
                 sess.refresh_state(&live);
@@ -254,8 +257,12 @@ fn main() -> anyhow::Result<()> {
             app.reload_tree();
             last_refresh = Some(Instant::now());
         }
+        health::phase(health::ACTIVITY);
         app.refresh_activity();
+        health::phase(health::DRAW);
         terminal.draw(|f| ui(f, &mut app))?;
+        health::loop_done(describe_view(&app));
+        health::phase(health::IDLE);
 
         // Wait for input, then handle everything already queued before the
         // next redraw, so fast typing and pastes land at once.
@@ -266,6 +273,8 @@ fn main() -> anyhow::Result<()> {
                     app.paste(text);
                 }
                 if let Event::Key(key) = ev {
+                    health::key(format!("{:?} {:?} {:?}", key.code, key.modifiers, key.kind));
+                    health::phase(health::KEY);
                     // Without bracketed paste, a pasted newline arrives as
                     // Enter in the same burst as more text: keep it as a
                     // newline instead of submitting each line.
@@ -293,11 +302,33 @@ fn main() -> anyhow::Result<()> {
     }
 
     restore_terminal();
+    health::stop();
     session::save_sessions(&app.sessions);
     Ok(())
 }
 
 
+
+/// What the screen shows, for the health status file.
+fn describe_view(app: &App) -> String {
+    let overlay = match &app.overlay {
+        None => "none",
+        Some(app::Overlay::Help) => "help",
+        Some(app::Overlay::Picker(_)) => "picker",
+        Some(app::Overlay::Text { .. }) => "text",
+        Some(app::Overlay::Bug { .. }) => "bug report",
+        Some(app::Overlay::Teleport { .. }) => "teleport",
+    };
+    format!(
+        "{:?} view, input mode {:?}, overlay {overlay}, row {} of {}, prompt {} chars, scope {:?}",
+        app.mode,
+        app.input_mode,
+        app.sel,
+        app.rows().len(),
+        app.input.chars().count(),
+        app.agent_view_scope,
+    )
+}
 
 /// Leave raw mode and the alternate screen, and show the cursor again, so
 /// the shell is exactly as it was before orchestra started.

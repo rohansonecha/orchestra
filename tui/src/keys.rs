@@ -314,6 +314,7 @@ pub(crate) fn attach_to_session(name: &str, status_message: &mut String) {
     // by an older orchestra (before these were set at spawn) get it too:
     // no tmux status bar, mouse wheel scrolls the conversation.
     session::session_look(name);
+    crate::health::phase(crate::health::ATTACHED);
     let status = Command::new("tmux")
         .arg("attach")
         .arg("-t")

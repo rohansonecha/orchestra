@@ -25,10 +25,11 @@ const WAKE_TOKEN: Token = Token(2);
 // is enough.
 const TTY_BUFFER_SIZE: usize = 1_024;
 
-// orchestra patch: a bracketed paste whose end marker has not arrived this
-// long after the last byte is delivered as is, so a lost `ESC[201~` can't
-// swallow all later input.
-const PASTE_END_TIMEOUT: Duration = Duration::from_millis(500);
+// orchestra patch: an escape sequence still incomplete this long after its
+// last byte is given up on, so a lost end can't swallow all later input. A
+// bracketed paste is delivered as is; anything else (a cut-off mouse
+// report, say) is dropped.
+const INCOMPLETE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// orchestra patch: whether the tty has bytes to read right now. The tty fd
 /// is blocking, so reading it when it is empty would block the caller
@@ -85,7 +86,7 @@ impl UnixInternalEventSource {
 
 impl EventSource for UnixInternalEventSource {
     fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
-        self.parser.flush_stale_paste();
+        self.parser.flush_stale();
         if let Some(event) = self.parser.next() {
             return Ok(Some(event));
         }
@@ -93,8 +94,8 @@ impl EventSource for UnixInternalEventSource {
         let timeout = PollTimeout::new(timeout);
 
         loop {
-            // While a paste is incomplete, wake up in time to flush it.
-            let wait = match (timeout.leftover(), self.parser.paste_deadline()) {
+            // While a sequence is incomplete, wake up in time to give up on it.
+            let wait = match (timeout.leftover(), self.parser.incomplete_deadline()) {
                 (Some(t), Some(d)) => Some(t.min(d)),
                 (None, d) => d,
                 (t, None) => t,
@@ -111,7 +112,7 @@ impl EventSource for UnixInternalEventSource {
             };
 
             if self.events.is_empty() {
-                self.parser.flush_stale_paste();
+                self.parser.flush_stale();
                 if let Some(event) = self.parser.next() {
                     return Ok(Some(event));
                 }
@@ -236,25 +237,25 @@ impl Default for Parser {
 }
 
 impl Parser {
-    fn pending_paste(&self) -> bool {
-        self.buffer.starts_with(b"\x1B[200~")
-    }
-
-    /// How long until an incomplete paste is flushed, if one is pending.
-    fn paste_deadline(&self) -> Option<Duration> {
-        if !self.pending_paste() {
+    /// How long until an incomplete sequence is given up on, if one is
+    /// pending.
+    fn incomplete_deadline(&self) -> Option<Duration> {
+        if self.buffer.is_empty() {
             return None;
         }
         let since = self.last_byte.map(|t| t.elapsed()).unwrap_or_default();
-        Some(PASTE_END_TIMEOUT.saturating_sub(since))
+        Some(INCOMPLETE_TIMEOUT.saturating_sub(since))
     }
 
-    /// Deliver an incomplete paste whose end marker never came.
-    fn flush_stale_paste(&mut self) {
-        if self.paste_deadline() == Some(Duration::ZERO) {
-            let text = String::from_utf8_lossy(&self.buffer[6..]).replace('\r', "\n");
+    /// Give up on an incomplete sequence whose end never came: deliver a
+    /// paste as is, drop anything else.
+    fn flush_stale(&mut self) {
+        if self.incomplete_deadline() == Some(Duration::ZERO) {
+            if self.buffer.starts_with(b"\x1B[200~") {
+                let text = String::from_utf8_lossy(&self.buffer[6..]).replace('\r', "\n");
+                self.internal_events.push_back(InternalEvent::Event(Event::Paste(text)));
+            }
             self.buffer.clear();
-            self.internal_events.push_back(InternalEvent::Event(Event::Paste(text)));
         }
     }
 

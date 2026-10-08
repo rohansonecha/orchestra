@@ -507,7 +507,9 @@ impl App {
             }
             self.activity.insert(name, Activity { working, looping, summary, last_active });
         }
-        if self.import.scanned.is_none_or(|t| t.elapsed().as_secs() >= 15) {
+        // One periodic scan at a time: on a slow disk a scan can outlast
+        // the interval, and overlapping scans multiply the reads.
+        if self.import.pending.is_none() && self.import.scanned.is_none_or(|t| t.elapsed().as_secs() >= 15) {
             self.rescan_import();
         }
         self.suspend_idle();

@@ -61,6 +61,35 @@ fn mtime(p: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// A file's size and modification time: when both are unchanged, what was
+/// read from it last time still holds.
+type Stamp = (u64, std::time::SystemTime);
+
+fn stamp(p: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+/// Results of reading each transcript, reused while the file is unchanged.
+/// A scan runs every 15 seconds over hundreds of transcripts, almost all of
+/// them untouched since the last one.
+type ReadCache = HashMap<PathBuf, (Stamp, Option<ExternalSession>)>;
+static READ_CACHE: std::sync::Mutex<Option<ReadCache>> = std::sync::Mutex::new(None);
+
+fn cached(path: &Path, read: impl FnOnce(&Path) -> Option<ExternalSession>) -> Option<ExternalSession> {
+    let Some(st) = stamp(path) else { return read(path) };
+    if let Some((s, v)) = READ_CACHE.lock().ok().and_then(|c| c.as_ref()?.get(path).cloned()) {
+        if s == st {
+            return v;
+        }
+    }
+    let v = read(path);
+    if let Ok(mut c) = READ_CACHE.lock() {
+        c.get_or_insert_with(HashMap::new).insert(path.to_path_buf(), (st, v.clone()));
+    }
+    v
+}
+
 fn head_lines(p: &Path, n: usize) -> Vec<Value> {
     let Ok(f) = File::open(p) else { return Vec::new() };
     BufReader::new(f)
@@ -161,7 +190,7 @@ pub fn scan_claude(projects: &Path) -> Vec<ExternalSession> {
             if path.extension().is_none_or(|e| e != "jsonl") {
                 continue;
             }
-            if let Some(s) = read_claude(&path) {
+            if let Some(s) = cached(&path, read_claude) {
                 out.push(s);
             }
         }
@@ -232,15 +261,38 @@ fn read_claude(path: &Path) -> Option<ExternalSession> {
 
 /// `relocatedCwd` values in a Claude transcript, in order. Only lines
 /// mentioning it are parsed, so large transcripts stay cheap.
+/// Per transcript: bytes read so far, and the relocations found in them.
+type RelocatedCache = HashMap<PathBuf, (u64, Vec<String>)>;
+
 fn relocated_cwds(path: &Path) -> Vec<String> {
-    let Ok(f) = File::open(path) else { return Vec::new() };
-    BufReader::new(f)
-        .lines()
-        .map_while(Result::ok)
-        .filter(|l| l.contains("\"relocatedCwd\""))
-        .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
-        .filter_map(|v| v.get("relocatedCwd").and_then(Value::as_str).map(str::to_string))
-        .collect()
+    // Transcripts only grow, and some are hundreds of MB: remember how far
+    // each was read and what it held, and read only what was added since.
+    static SEEN: std::sync::Mutex<Option<RelocatedCache>> = std::sync::Mutex::new(None);
+    let Ok(mut f) = File::open(path) else { return Vec::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = seen.get_or_insert_with(HashMap::new);
+    let (mut offset, mut found) = cache.get(path).cloned().unwrap_or_default();
+    if len < offset {
+        // Rewritten from scratch: start over.
+        (offset, found) = (0, Vec::new());
+    }
+    if f.seek(SeekFrom::Start(offset)).is_ok() {
+        let mut reader = BufReader::new(f);
+        let mut line = Vec::new();
+        // Stop before a partial last line; it is read next time, complete.
+        while matches!(reader.read_until(b'\n', &mut line), Ok(n) if n > 0) && line.ends_with(b"\n") {
+            offset += line.len() as u64;
+            if line.windows(14).any(|w| w == b"\"relocatedCwd\"") {
+                if let Some(c) = serde_json::from_slice::<Value>(&line).ok().and_then(|v| v.get("relocatedCwd")?.as_str().map(str::to_string)) {
+                    found.push(c);
+                }
+            }
+            line.clear();
+        }
+    }
+    cache.insert(path.to_path_buf(), (offset, found.clone()));
+    found
 }
 
 /// pi conversations: orchestra's own (`~/.orchestra/pi-sessions/<id>/`,
@@ -259,7 +311,7 @@ pub fn scan_pi(orchestra_dir: &Path, pi_dir: &Path) -> Vec<ExternalSession> {
             .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
             .max_by_key(|p| mtime(p));
         if let Some(p) = newest {
-            if let Some(mut s) = read_pi(&p) {
+            if let Some(mut s) = cached(&p, read_pi) {
                 s.id = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 out.push(s);
             }
@@ -269,7 +321,7 @@ pub fn scan_pi(orchestra_dir: &Path, pi_dir: &Path) -> Vec<ExternalSession> {
         for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
             let p = f.path();
             if p.extension().is_some_and(|x| x == "jsonl") {
-                if let Some(s) = read_pi(&p) {
+                if let Some(s) = cached(&p, read_pi) {
                     out.push(s);
                 }
             }
@@ -329,7 +381,14 @@ pub fn scan_codex(codex_home: &Path) -> Vec<ExternalSession> {
     collect_jsonl(&codex_home.join("sessions"), 4, &mut files);
     files
         .into_iter()
-        .filter_map(|p| read_codex(&p, &names))
+        .filter_map(|p| {
+            // Cached without the thread name, which lives in another file.
+            let mut s = cached(&p, read_codex)?;
+            if let Some(n) = names.get(&s.id) {
+                s.title = one_line(n, 80);
+            }
+            (!s.title.is_empty()).then_some(s)
+        })
         .collect()
 }
 
@@ -345,7 +404,9 @@ fn collect_jsonl(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn read_codex(path: &Path, names: &HashMap<String, String>) -> Option<ExternalSession> {
+/// A Codex thread; the title is its first prompt, or empty (the caller
+/// applies the thread name, and drops threads with neither).
+fn read_codex(path: &Path) -> Option<ExternalSession> {
     let head = head_lines(path, HEAD_LINES);
     let meta = head.first()?;
     if meta.get("type").and_then(Value::as_str) != Some("session_meta") {
@@ -359,7 +420,7 @@ fn read_codex(path: &Path, names: &HashMap<String, String>) -> Option<ExternalSe
     let cwd = p.get("cwd")?.as_str()?.to_string();
     let branch = p.pointer("/git/branch").and_then(Value::as_str).map(str::to_string);
     let first_prompt = head.iter().skip(1).find_map(codex_user_text);
-    let title = names.get(&id).cloned().or(first_prompt)?;
+    let title = first_prompt.unwrap_or_default();
     Some(ExternalSession {
         backend: Backend::Codex,
         id,

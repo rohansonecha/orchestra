@@ -11,6 +11,6 @@ Usually each keypress completes an event, so this goes unnoticed. But after a br
 ## The patch
 
 1. The read loop only reads again when `poll()` says the terminal has bytes waiting, so it returns to the caller's poll timeout instead of blocking.
-2. If a paste's end marker hasn't arrived 500 ms after its last byte, the bytes received so far are delivered as the paste, so a lost end marker can't swallow later input.
+2. If an escape sequence is still incomplete 500 ms after its last byte, the parser gives up on it: a bracketed paste is delivered as received, and anything else (a mouse report cut off after `ESC[<`, for example) is dropped. Otherwise a lost end would swallow all later input, including arrows and Ctrl+C.
 
 To update crossterm, replace this directory with the new version and reapply both changes, or drop the patch once upstream fixes the reader.
