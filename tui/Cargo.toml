@@ -19,3 +19,8 @@ anyhow = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+# Patched crossterm 0.28.1 (see vendor/crossterm/ORCHESTRA_PATCH.md): its input
+# reader could block forever on an unterminated bracketed paste.
+[patch.crates-io]
+crossterm = { path = "vendor/crossterm" }
