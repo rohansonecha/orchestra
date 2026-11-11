@@ -129,6 +129,11 @@ problems; correlate by timestamp.
   `--cancel-command <session_id>` to withdraw. Read-only unless asked.
 - Runs as the API server's user with its kubeconfig; for the compute cluster
   pass `--context <ctx> -n <ns>` (from a dump's `kubernetes_contexts/`).
+- DB reads: the URI is bare `postgresql://`, which SQLAlchemy 2.1 maps to
+  psycopg 3 (not installed). Always
+  `create_engine(sky.utils.db.db_utils.psycopg2_url(os.environ["SKYPILOT_DB_CONNECTION_URI"]))`;
+  never pass the URI as is, and don't hunt for another interpreter. Print only
+  the fields you need. Recipe: wiki `infrastructure/skypilot-postgres.md`.
 
 ## Rules
 
